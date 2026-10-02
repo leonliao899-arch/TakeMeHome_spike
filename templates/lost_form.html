@@ -11,6 +11,7 @@
       max-width: 500px;
       margin: 0 auto;
       line-height: 1.5;
+      color: #333;
     }
     .step-section { display: none; margin-bottom: 20px; }
     .step-section.active { display: block; }
@@ -47,6 +48,85 @@
       margin-top: 4px;
       display: none;
     }
+
+    /* ===== 自製確認摘要 Modal 彈窗樣式 (保證真機排版不跑版) ===== */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.6);
+      z-index: 9999;
+      align-items: center;
+      justify-content: center;
+      padding: 15px;
+    }
+    .modal-card {
+      background: #ffffff;
+      width: 100%;
+      max-width: 440px;
+      max-height: 90vh;
+      overflow-y: auto;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.25);
+      box-sizing: border-box;
+    }
+    .modal-card h3 {
+      margin-top: 0;
+      margin-bottom: 12px;
+      color: #1e3a8a;
+      text-align: center;
+      border-bottom: 2px solid #e2e8f0;
+      padding-bottom: 8px;
+    }
+    .summary-list {
+      font-size: 14px;
+      line-height: 1.8;
+      background: #f8fafc;
+      padding: 12px 14px;
+      border-radius: 8px;
+      border: 1px solid #e2e8f0;
+    }
+    .summary-item {
+      display: flex;
+      justify-content: space-between;
+      border-bottom: 1px dashed #cbd5e1;
+      padding: 4px 0;
+    }
+    .summary-item:last-child {
+      border-bottom: none;
+    }
+    .summary-label {
+      color: #64748b;
+      font-weight: 500;
+    }
+    .summary-val {
+      font-weight: bold;
+      color: #0f172a;
+      text-align: right;
+      max-width: 65%;
+      word-break: break-all;
+    }
+    .modal-actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .modal-actions button {
+      flex: 1;
+      padding: 11px 0;
+      font-weight: bold;
+    }
+    .btn-cancel {
+      background: #f1f5f9;
+      color: #475569;
+      border: 1px solid #cbd5e1;
+    }
+    .btn-confirm {
+      background: #2563eb;
+      color: #ffffff;
+      border: none;
+    }
   </style>
 </head>
 <body>
@@ -54,7 +134,7 @@
   <h2>📢 發布走失公告 (Step <span id="step-indicator">1</span>/4)</h2>
 
   <form id="lostForm" onsubmit="return false;">
-    <!-- ===== Step 1: 基本硬性條件（無預選，強制主動選取） ===== -->
+    <!-- ===== Step 1: 基本硬性條件 ===== -->
     <div class="step-section active" id="step-1">
       <h3>第一步：基本條件</h3>
       <div class="form-group">
@@ -95,7 +175,7 @@
       </div>
     </div>
 
-    <!-- ===== Step 2: 外觀特徵（無預選，強制主動選取） ===== -->
+    <!-- ===== Step 2: 外觀特徵 ===== -->
     <div class="step-section" id="step-2">
       <h3>第二步：外觀特徵</h3>
       <div class="form-group">
@@ -166,7 +246,7 @@
       </div>
     </div>
 
-    <!-- ===== Step 3: 照片上傳欄位 ===== -->
+    <!-- ===== Step 3: 照片上傳欄位（徹底移除死碼與多餘測試按鈕） ===== -->
     <div class="step-section" id="step-3">
       <h3>第三步：寵物照片 (1 必填 + 2 選填)</h3>
       
@@ -235,13 +315,31 @@
 
       <div class="btn-group">
         <button type="button" onclick="prevStep(3)">⬅ 上一步</button>
-        <button type="button" class="btn-primary" onclick="submitLostReport()">📢 確認發布走失公告</button>
+        <button type="button" class="btn-primary" onclick="openSummaryModal()">📢 確認發布走失公告</button>
       </div>
       <div id="submit-status" style="margin-top: 15px; font-weight: bold; text-align: center;"></div>
     </div>
   </form>
 
+  <!-- ===== 跨裝置原生相容：自製確認彈出層 ===== -->
+  <div class="modal-overlay" id="summaryModal">
+    <div class="modal-card">
+      <h3>📋 請確認走失公告資訊</h3>
+      <div class="summary-list" id="summaryContent">
+        <!-- 由 JavaScript 動態注入結構化內容 -->
+      </div>
+      <p style="font-size: 12px; color: #64748b; margin: 10px 0 0; text-align: center;">
+        * 為保護隱私，地圖公開座標將依設定自動偏移，Email 絕不公開。
+      </p>
+      <div class="modal-actions">
+        <button type="button" class="btn-cancel" onclick="closeSummaryModal()">返回修改</button>
+        <button type="button" class="btn-confirm" onclick="executeSubmit()">確認送出 🚀</button>
+      </div>
+    </div>
+  </div>
+
   <script>
+    // 步驟切換
     function showStep(step) {
       document.querySelectorAll('.step-section').forEach(el => el.classList.remove('active'));
       document.getElementById('step-' + step).classList.add('active');
@@ -402,7 +500,7 @@
       }
     }
 
-    // 單圖上傳輔助函式
+    // 單圖上傳（由送出管線統一調用一次）
     async function uploadSinglePhoto(fileInputId) {
       const fileInput = document.getElementById(fileInputId);
       if (!fileInput.files || fileInput.files.length === 0) return '';
@@ -421,9 +519,8 @@
       return '';
     }
 
-    // 完整送出防呆校驗與後端寫入（含全欄位摘要確認視窗）
-    async function submitLostReport() {
-      const statusBox = document.getElementById('submit-status');
+    // 打開自製結構化摘要確認彈窗
+    function openSummaryModal() {
       const photo1 = document.getElementById('photo_1').files[0];
       const lat = document.getElementById('lat').value;
       const lng = document.getElementById('lng').value;
@@ -458,15 +555,13 @@
         return;
       }
 
-      // ===== 全欄位完整摘要提示視窗 =====
+      // 提取所有填寫欄位
       const species = document.getElementById('species').value;
       const size = document.getElementById('size').value;
       const furLength = document.getElementById('fur_length').value;
-
       const acc = document.getElementById('accessory').value;
       const accColor = document.getElementById('accessory_color') ? document.getElementById('accessory_color').value : '';
       const accText = (acc === '沒有') ? '無' : `${accColor}${acc}`;
-
       const furColor = document.getElementById('fur_color').value;
       const mark = document.getElementById('special_mark').value;
       const notes = document.getElementById('notes').value.trim() || '無';
@@ -479,51 +574,61 @@
       const formattedTime = lostTime.replace('T', ' ');
       const privacyRadius = document.querySelector('input[name="privacy_radius"]:checked').value;
 
-      const confirmMsg = 
-        `【請確認以下走失公告資訊】\n` +
-        `----------------------------------------\n` +
-        `• 基本條件：${species}（${size}型 / ${furLength}）\n` +
-        `• 毛色色系：${furColor}\n` +
-        `• 配件資訊：${accText}\n` +
-        `• 特殊記號：${mark}\n` +
-        `• 備註描述：${notes}\n` +
-        `• 寵物照片：已選取 ${photoCount} 張（全身照 1 張${p2 || p3 ? ' + 特徵照' : ''}）\n` +
-        `• 走失座標：緯度 ${lat}, 經度 ${lng}\n` +
-        `• 隱私設定：公開座標模糊 ${privacyRadius} 公尺\n` +
-        `• 走失時間：${formattedTime}\n` +
-        `• 飼主信箱：${email}（不公開）\n` +
-        `----------------------------------------\n` +
-        `確認資訊無誤並發布到地圖嗎？`;
+      // 組裝乾淨的卡片列表 HTML
+      const summaryHTML = `
+        <div class="summary-item"><span class="summary-label">物種與體型</span><span class="summary-val">${species} (${size}型 / ${furLength})</span></div>
+        <div class="summary-item"><span class="summary-label">毛色色系</span><span class="summary-val">${furColor}</span></div>
+        <div class="summary-item"><span class="summary-label">配件特徵</span><span class="summary-val">${accText}</span></div>
+        <div class="summary-item"><span class="summary-label">特殊記號</span><span class="summary-val">${mark}</span></div>
+        <div class="summary-item"><span class="summary-label">備註描述</span><span class="summary-val">${notes}</span></div>
+        <div class="summary-item"><span class="summary-label">照片張數</span><span class="summary-val">${photoCount} 張 (全身照必填)</span></div>
+        <div class="summary-item"><span class="summary-label">走失座標</span><span class="summary-val">${lat}, ${lng}</span></div>
+        <div class="summary-item"><span class="summary-label">隱私模糊</span><span class="summary-val">偏移 ${privacyRadius} 公尺</span></div>
+        <div class="summary-item"><span class="summary-label">走失時間</span><span class="summary-val">${formattedTime}</span></div>
+        <div class="summary-item"><span class="summary-label">飼主信箱</span><span class="summary-val">${email}</span></div>
+      `;
 
-      if (!confirm(confirmMsg)) {
-        return;
-      }
+      document.getElementById('summaryContent').innerHTML = summaryHTML;
+      document.getElementById('summaryModal').style.display = 'flex';
+    }
 
+    function closeSummaryModal() {
+      document.getElementById('summaryModal').style.display = 'none';
+    }
+
+    // 使用者在自製彈窗點擊「確認送出」時正式執行
+    async function executeSubmit() {
+      closeSummaryModal();
+      const statusBox = document.getElementById('submit-status');
       statusBox.style.color = '#2563eb';
       statusBox.innerText = "⏳ 正在上傳照片並建立走失公告...";
 
       try {
+        // 第一張照片剛好只會在此處被上傳一次
         const photoPath1 = await uploadSinglePhoto('photo_1');
         const photoPath2 = await uploadSinglePhoto('photo_2');
         const photoPath3 = await uploadSinglePhoto('photo_3');
 
+        const privacyRadius = document.querySelector('input[name="privacy_radius"]:checked').value;
+        const notes = document.getElementById('notes').value.trim();
+
         const payload = {
-          species: species,
-          size: size,
-          fur_length: furLength,
-          accessory: acc,
-          accessory_color: accColor || '無',
-          fur_color: furColor,
-          special_mark: mark,
-          notes: notes === '無' ? '' : notes,
+          species: document.getElementById('species').value,
+          size: document.getElementById('size').value,
+          fur_length: document.getElementById('fur_length').value,
+          accessory: document.getElementById('accessory').value,
+          accessory_color: document.getElementById('accessory_color') ? document.getElementById('accessory_color').value : '無',
+          fur_color: document.getElementById('fur_color').value,
+          special_mark: document.getElementById('special_mark').value,
+          notes: notes,
           photo_1: photoPath1,
           photo_2: photoPath2,
           photo_3: photoPath3,
-          lat: lat,
-          lng: lng,
+          lat: document.getElementById('lat').value,
+          lng: document.getElementById('lng').value,
           privacy_radius: privacyRadius,
-          lost_time: lostTime,
-          email: email
+          lost_time: document.getElementById('lost_time').value,
+          email: document.getElementById('email').value.trim()
         };
 
         const response = await fetch('/api/lost_reports', {
