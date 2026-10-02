@@ -76,11 +76,10 @@
     // 2. 載入 OpenStreetMap 圖資瓦片
 
     
-    // CARTO Voyager 高清圖資
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-    maxZoom: 19,
-    subdomains: 'abcd',
-    attribution: '&copy; <a href="https://carto.com/">CARTO</a>'
+    // 2. 載入 OpenStreetMap 免費開源圖資（無浮水印、免 API Key、最穩）
+    L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap'
     }).addTo(map);
 
     // 3. 撈取資料庫預設圖釘
