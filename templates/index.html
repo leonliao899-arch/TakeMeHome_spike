@@ -74,9 +74,13 @@
     const map = L.map('map').setView([25.026, 121.543], 14);
 
     // 2. 載入 OpenStreetMap 圖資瓦片
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; OpenStreetMap'
+
+    
+    // CARTO Voyager 高清圖資
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    maxZoom: 19,
+    subdomains: 'abcd',
+    attribution: '&copy; <a href="https://carto.com/">CARTO</a>'
     }).addTo(map);
 
     // 3. 撈取資料庫預設圖釘
