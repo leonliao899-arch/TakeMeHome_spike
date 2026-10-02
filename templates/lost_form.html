@@ -265,7 +265,7 @@
       }
     }
 
-    // Step 1 必填校驗（未手動選取則紅框阻擋）
+    // Step 1 必填校驗
     function validateStep1AndNext() {
       let isValid = true;
       const fields = [
@@ -294,7 +294,7 @@
       nextStep(2);
     }
 
-    // Step 2 必填校驗（配件、顏色、毛色、記號強制手動選取）
+    // Step 2 必填校驗
     function validateStep2AndNext() {
       let isValid = true;
       const acc = document.getElementById('accessory');
@@ -306,7 +306,6 @@
       const mark = document.getElementById('special_mark');
       const markErr = document.getElementById('special-mark-error');
 
-      // 檢查配件
       if (!acc.value) {
         acc.classList.add('input-error');
         accErr.style.display = 'block';
@@ -316,7 +315,6 @@
         accErr.style.display = 'none';
       }
 
-      // 若有配件，檢查配件顏色
       if (acc.value && acc.value !== '沒有') {
         if (!color.value) {
           color.classList.add('input-error');
@@ -328,7 +326,6 @@
         }
       }
 
-      // 檢查毛色色系
       if (!furColor.value) {
         furColor.classList.add('input-error');
         furColorErr.style.display = 'block';
@@ -338,7 +335,6 @@
         furColorErr.style.display = 'none';
       }
 
-      // 檢查特殊記號
       if (!mark.value) {
         mark.classList.add('input-error');
         markErr.style.display = 'block';
@@ -355,7 +351,7 @@
       nextStep(3);
     }
 
-    // Step 3 必填校驗：第 1 張全身照必選
+    // Step 3 必填校驗
     function validateStep3AndNext() {
       const photo1 = document.getElementById('photo_1');
       const errText = document.getElementById('photo1-error');
@@ -370,7 +366,7 @@
       nextStep(4);
     }
 
-    // 瀏覽器 GPS 定位帶入
+    // GPS 座標帶入
     function getLocation() {
       const locErr = document.getElementById('location-error');
       if (!navigator.geolocation) {
@@ -390,7 +386,7 @@
       );
     }
 
-    // 純前端照片即時預覽
+    // 純前端即時預覽
     function previewImage(inputElement, previewImgId) {
       const img = document.getElementById(previewImgId);
       const photo1Err = document.getElementById('photo1-error');
@@ -406,7 +402,7 @@
       }
     }
 
-    // 自動上傳單一檔案至伺服器
+    // 單圖上傳輔助函式
     async function uploadSinglePhoto(fileInputId) {
       const fileInput = document.getElementById(fileInputId);
       if (!fileInput.files || fileInput.files.length === 0) return '';
@@ -425,7 +421,7 @@
       return '';
     }
 
-    // 完整送出防呆校驗與後端寫入
+    // 完整送出防呆校驗與後端寫入（含全欄位摘要確認視窗）
     async function submitLostReport() {
       const statusBox = document.getElementById('submit-status');
       const photo1 = document.getElementById('photo_1').files[0];
@@ -462,11 +458,42 @@
         return;
       }
 
-      const confirmMsg = `請確認以下公告資訊：\n\n` +
-        `• 寵物：${document.getElementById('species').value}（${document.getElementById('fur_color').value} / ${document.getElementById('size').value}型）\n` +
-        `• 走失時間：${lostTime}\n` +
-        `• 飼主 Email：${email}\n\n` +
-        `確認送出後，系統將依設定偏移座標並發布於地圖。`;
+      // ===== 全欄位完整摘要提示視窗 =====
+      const species = document.getElementById('species').value;
+      const size = document.getElementById('size').value;
+      const furLength = document.getElementById('fur_length').value;
+
+      const acc = document.getElementById('accessory').value;
+      const accColor = document.getElementById('accessory_color') ? document.getElementById('accessory_color').value : '';
+      const accText = (acc === '沒有') ? '無' : `${accColor}${acc}`;
+
+      const furColor = document.getElementById('fur_color').value;
+      const mark = document.getElementById('special_mark').value;
+      const notes = document.getElementById('notes').value.trim() || '無';
+
+      const p1 = document.getElementById('photo_1').files.length > 0;
+      const p2 = document.getElementById('photo_2').files.length > 0;
+      const p3 = document.getElementById('photo_3').files.length > 0;
+      const photoCount = [p1, p2, p3].filter(Boolean).length;
+
+      const formattedTime = lostTime.replace('T', ' ');
+      const privacyRadius = document.querySelector('input[name="privacy_radius"]:checked').value;
+
+      const confirmMsg = 
+        `【請確認以下走失公告資訊】\n` +
+        `----------------------------------------\n` +
+        `• 基本條件：${species}（${size}型 / ${furLength}）\n` +
+        `• 毛色色系：${furColor}\n` +
+        `• 配件資訊：${accText}\n` +
+        `• 特殊記號：${mark}\n` +
+        `• 備註描述：${notes}\n` +
+        `• 寵物照片：已選取 ${photoCount} 張（全身照 1 張${p2 || p3 ? ' + 特徵照' : ''}）\n` +
+        `• 走失座標：緯度 ${lat}, 經度 ${lng}\n` +
+        `• 隱私設定：公開座標模糊 ${privacyRadius} 公尺\n` +
+        `• 走失時間：${formattedTime}\n` +
+        `• 飼主信箱：${email}（不公開）\n` +
+        `----------------------------------------\n` +
+        `確認資訊無誤並發布到地圖嗎？`;
 
       if (!confirm(confirmMsg)) {
         return;
@@ -479,17 +506,16 @@
         const photoPath1 = await uploadSinglePhoto('photo_1');
         const photoPath2 = await uploadSinglePhoto('photo_2');
         const photoPath3 = await uploadSinglePhoto('photo_3');
-        const privacyRadius = document.querySelector('input[name="privacy_radius"]:checked').value;
 
         const payload = {
-          species: document.getElementById('species').value,
-          size: document.getElementById('size').value,
-          fur_length: document.getElementById('fur_length').value,
-          accessory: document.getElementById('accessory').value,
-          accessory_color: document.getElementById('accessory_color') ? document.getElementById('accessory_color').value : '無',
-          fur_color: document.getElementById('fur_color').value,
-          special_mark: document.getElementById('special_mark').value,
-          notes: document.getElementById('notes').value,
+          species: species,
+          size: size,
+          fur_length: furLength,
+          accessory: acc,
+          accessory_color: accColor || '無',
+          fur_color: furColor,
+          special_mark: mark,
+          notes: notes === '無' ? '' : notes,
           photo_1: photoPath1,
           photo_2: photoPath2,
           photo_3: photoPath3,
