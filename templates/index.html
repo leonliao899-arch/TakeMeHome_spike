@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>走失寵物協尋平台 - 定位測試</title>
+  <title>TakeMeHome - 雙色圖釘地圖</title>
 
-  <!-- 引入 Leaflet 的 CSS 樣式 -->
+  <!-- 引入 Leaflet 的 CSS 樣式表 -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 
   <style>
@@ -18,13 +18,14 @@
       width: 100vw;
       height: 100vh;
     }
-    /* 懸浮控制面版：固定在畫面頂部中間，方便手機操作 */
+
+    /* 頂部定位面板 */
     .controls {
       position: absolute;
       top: 15px;
       left: 50%;
       transform: translateX(-50%);
-      z-index: 1000; /* 確保按鈕浮在地圖圖層之上 */
+      z-index: 1000;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -35,124 +36,170 @@
       color: white;
       border: none;
       padding: 10px 18px;
-      font-size: 15px;
+      font-size: 14px;
       font-weight: 600;
       border-radius: 25px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
       cursor: pointer;
     }
     .loc-btn:active {
       transform: scale(0.96);
     }
-    /* 狀態提示框：提供操作回饋 */
     .status-box {
       background-color: rgba(255, 255, 255, 0.95);
       padding: 6px 14px;
       border-radius: 8px;
-      font-size: 13px;
+      font-size: 12px;
       box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-      display: none; /* 平常先隱藏 */
+      display: none;
+    }
+
+    /* 檢查點四重點：右下角圖例面板 */
+    .map-legend {
+      position: absolute;
+      bottom: 25px;
+      right: 15px;
+      z-index: 1000;
+      background: rgba(255, 255, 255, 0.95);
+      padding: 10px 14px;
+      border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+      font-size: 13px;
+      line-height: 1.8;
+    }
+    .legend-dot {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    .dot-lost {
+      background-color: #ef4444; /* 紅色：走失公告 */
+      border: 2px solid white;
+      box-shadow: 0 0 2px rgba(0,0,0,0.5);
+    }
+    .dot-sighting {
+      background-color: #3b82f6; /* 藍色：目擊通報 */
+      border: 2px solid white;
+      box-shadow: 0 0 2px rgba(0,0,0,0.5);
     }
   </style>
 </head>
 <body>
 
-  <!-- 控制區塊：按鈕與訊息提示 -->
+  <!-- 頂部定位按鈕 -->
   <div class="controls">
-    <button class="loc-btn" id="locateBtn" onclick="getUserLocation()">📍 使用目前位置</button>
+    <button class="loc-btn" onclick="getUserLocation()">📍 使用目前位置</button>
     <div class="status-box" id="statusBox"></div>
   </div>
 
   <!-- 地圖容器 -->
   <div id="map"></div>
 
-  <!-- 引入 Leaflet JavaScript 核心庫 -->
+  <!-- 右下角圖例 -->
+  <div class="map-legend">
+    <div><span class="legend-dot dot-lost"></span><strong>🔴 走失公告</strong></div>
+    <div><span class="legend-dot dot-sighting"></span><strong>🔵 目擊通報</strong></div>
+  </div>
+
+  <!-- 引入 Leaflet JS -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
   <script>
-    // 1. 初始化地圖，中心點預設在大安區
+    // 1. 初始化地圖，中心點預設在大安區 [25.026, 121.543]，縮放級別 14
     const map = L.map('map').setView([25.026, 121.543], 14);
 
-    // 2. 載入 OpenStreetMap 圖資瓦片
-
-    
-    // 2. 載入 OpenStreetMap 免費開源圖資（無浮水印、免 API Key、最穩）
+    // 2. 載入 OpenStreetMap 開源圖資
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap'
     }).addTo(map);
 
-    // 3. 撈取資料庫預設圖釘
-    fetch('/api/reports')
+    // 3. 呼叫檢查點三 API，分別渲染雙色圖釘
+    fetch('/api/map-data')
       .then(res => res.json())
       .then(data => {
-        data.forEach(item => {
-          const marker = L.marker([item.lat, item.lng]).addTo(map);
-          marker.bindPopup(`<b>通報編號 #${item.id}</b><br>時間：${item.created_at}`);
+        // (1) 繪製紅色圖釘：走失公告 (lost_reports)
+        data.lost_reports.forEach(item => {
+          const redMarker = L.circleMarker([item.lat, item.lng], {
+            radius: 9,
+            fillColor: '#ef4444',
+            color: '#ffffff',
+            weight: 2,
+            opacity: 1,
+            fillOpacity: 0.95
+          }).addTo(map);
+
+          const popupContent = `
+            <div style="min-width: 150px; font-size: 13px;">
+              <strong style="color: #ef4444;">【🔴 走失公告】</strong><br>
+              <strong>案件：</strong>${item.case_code}<br>
+              <strong>物種：</strong>${item.species} (${item.size}型 / ${item.fur_length})<br>
+              <strong>毛色：</strong>${item.fur_color}<br>
+              <strong>配件：</strong>${item.accessory} (${item.accessory_color || '無'})<br>
+              <strong>記號：</strong>${item.special_mark}<br>
+              <strong>狀態：</strong>${item.status}
+            </div>
+          `;
+          redMarker.bindPopup(popupContent);
         });
-      });
 
-    // 4. 定位功能與防呆機制
-    let userMarker = null; // 用來記錄使用者位置的圖釘
+        // (2) 繪製藍色圖釘：目擊通報 (sightings)
+        data.sightings.forEach(item => {
+          const blueMarker = L.circleMarker([item.lat, item.lng], {
+            radius: 9,
+            fillColor: '#3b82f6',
+            color: '#ffffff',
+            weight: 2,
+            opacity: 1,
+            fillOpacity: 0.95
+          }).addTo(map);
 
+          const popupContent = `
+            <div style="min-width: 150px; font-size: 13px;">
+              <strong style="color: #3b82f6;">【🔵 目擊通報】</strong><br>
+              <strong>物種：</strong>${item.species} (${item.size}型)<br>
+              <strong>毛色：</strong>${item.fur_color}<br>
+              <strong>描述：</strong>${item.description || '無描述'}<br>
+              <strong>時間：</strong>${item.sighting_time}<br>
+              <strong>狀態：</strong>${item.status}
+            </div>
+          `;
+          blueMarker.bindPopup(popupContent);
+        });
+      })
+      .catch(err => console.error("撈取雙色圖釘資料失敗：", err));
+
+    // 4. 使用者手機定位功能
+    let userMarker = null;
     function showStatus(text, isError = false) {
       const box = document.getElementById('statusBox');
       box.style.display = 'block';
-      box.style.color = isError ? '#d32f2f' : '#2e7d32'; // 錯誤用紅字，成功用綠字
+      box.style.color = isError ? '#d32f2f' : '#2e7d32';
       box.innerText = text;
     }
 
     function getUserLocation() {
-      // 防呆檢查：檢查瀏覽器是否支援 Geolocation API
       if (!navigator.geolocation) {
-        showStatus("⚠️ 你的瀏覽器不支援定位功能", true);
+        showStatus("⚠️ 瀏覽器不支援定位功能", true);
         return;
       }
-
-      showStatus("正在取得定位中，請稍候...");
-
-      // 呼叫瀏覽器原生定位功能
+      showStatus("正在取得定位中...");
       navigator.geolocation.getCurrentPosition(
-        // 成功回呼函式（Success Callback）
-        (position) => {
-          const lat = position.coords.latitude;
-          const lng = position.coords.longitude;
-          showStatus(`✅ 定位成功！緯度: ${lat.toFixed(4)}, 經度: ${lng.toFixed(4)}`);
-
-          // 平滑移動地圖視角到使用者位置，縮放拉近至 16
+        (pos) => {
+          const lat = pos.coords.latitude;
+          const lng = pos.coords.longitude;
+          showStatus(`✅ 定位成功！`);
           map.flyTo([lat, lng], 16);
-
-          // 若已插過目前位置圖釘，先移除舊的，再插新的
-          if (userMarker) {
-            map.removeLayer(userMarker);
-          }
-
-          userMarker = L.marker([lat, lng]).addTo(map);
-          userMarker.bindPopup("<b>📍 你目前的位置</b>").openPopup();
+          if (userMarker) map.removeLayer(userMarker);
+          userMarker = L.marker([lat, lng]).addTo(map).bindPopup("<b>📍 你目前的位置</b>").openPopup();
         },
-        // 失敗/拒絕回呼函式（Error Callback）- 評審口試亮點：精準防呆！
-        (error) => {
-          switch (error.code) {
-            case error.PERMISSION_DENIED:
-              showStatus("❌ 定位失敗：你拒絕了瀏覽器的定位授權", true);
-              break;
-            case error.POSITION_UNAVAILABLE:
-              showStatus("❌ 定位失敗：無法偵測到目前位置資訊", true);
-              break;
-            case error.TIMEOUT:
-              showStatus("❌ 定位失敗：定位連線逾時", true);
-              break;
-            default:
-              showStatus("❌ 定位發生未知錯誤", true);
-              break;
-          }
+        (err) => {
+          showStatus("❌ 無法取得定位授權", true);
         },
-        // 定位參數：啟用高精確度模式、10秒逾時
-        {
-          enableHighAccuracy: true,
-          timeout: 10000,
-          maximumAge: 0
-        }
+        { enableHighAccuracy: true, timeout: 10000 }
       );
     }
   </script>
