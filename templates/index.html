@@ -54,7 +54,7 @@
       display: none;
     }
 
-    /* 檢查點四重點：右下角圖例面板 */
+    /* 右下角圖例面板 */
     .map-legend {
       position: absolute;
       bottom: 25px;
@@ -117,7 +117,7 @@
       attribution: '&copy; OpenStreetMap'
     }).addTo(map);
 
-    // 3. 呼叫檢查點三 API，分別渲染雙色圖釘
+    // 3. 呼叫後端 API，分別渲染雙色圖釘
     fetch('/api/map-data')
       .then(res => res.json())
       .then(data => {
@@ -132,9 +132,13 @@
             fillOpacity: 0.95
           }).addTo(map);
 
+          // 判斷是否有寵物名字，有則顯示
+          const nameText = item.pet_name ? `<strong>名字：</strong>${item.pet_name}<br>` : '';
+
           const popupContent = `
             <div style="min-width: 150px; font-size: 13px;">
               <strong style="color: #ef4444;">【🔴 走失公告】</strong><br>
+              ${nameText}
               <strong>案件：</strong>${item.case_code}<br>
               <strong>物種：</strong>${item.species} (${item.size}型 / ${item.fur_length})<br>
               <strong>毛色：</strong>${item.fur_color}<br>
