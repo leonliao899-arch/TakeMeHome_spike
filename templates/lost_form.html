@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>發布走失公告</title>
   <style>
-    /* 極簡排版：確保手機與電腦文字不重疊、好點擊即可 */
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       padding: 15px;
@@ -17,6 +16,7 @@
     .step-section.active { display: block; }
     .form-group { margin-bottom: 16px; }
     label { display: block; margin-bottom: 6px; font-weight: bold; }
+    .required { color: #dc2626; margin-left: 2px; }
     select, input[type="text"], input[type="datetime-local"], input[type="email"] {
       width: 100%; padding: 8px; box-sizing: border-box; font-size: 16px; border: 1px solid #ccc; border-radius: 4px;
     }
@@ -25,7 +25,7 @@
     button.btn-primary { background: #2563eb; color: white; border: none; font-weight: bold; }
     .tag { font-size: 12px; color: #666; margin-top: 3px; }
     
-    /* 圖片預覽樣式：限制在 120px 內，保持比例且不破版 */
+    /* 縮圖預覽 */
     .img-preview {
       display: none;
       max-width: 120px;
@@ -35,54 +35,73 @@
       border: 1px solid #ddd;
       object-fit: cover;
     }
+
+    /* 錯誤警示紅框與紅字 */
+    .input-error {
+      border: 2px solid #dc2626 !important;
+      background-color: #fef2f2;
+    }
+    .error-text {
+      color: #dc2626;
+      font-size: 13px;
+      margin-top: 4px;
+      display: none;
+    }
   </style>
 </head>
 <body>
 
   <h2>📢 發布走失公告 (Step <span id="step-indicator">1</span>/4)</h2>
 
-  <form id="lostForm">
-    <!-- ===== Step 1: 基本硬性條件 ===== -->
+  <form id="lostForm" onsubmit="return false;">
+    <!-- ===== Step 1: 基本硬性條件（無預選，強制主動選取） ===== -->
     <div class="step-section active" id="step-1">
       <h3>第一步：基本條件</h3>
       <div class="form-group">
-        <label>物種 (硬性條件)：</label>
+        <label>物種 (硬性條件)<span class="required">*</span>：</label>
         <select id="species">
+          <option value="">-- 請選擇物種 --</option>
           <option value="狗">狗</option>
           <option value="貓">貓</option>
         </select>
+        <div id="species-error" class="error-text">請務必選擇物種！</div>
       </div>
 
       <div class="form-group">
-        <label>體型 (硬性條件)：</label>
+        <label>體型 (硬性條件)<span class="required">*</span>：</label>
         <select id="size">
+          <option value="">-- 請選擇體型 --</option>
           <option value="小">小型</option>
-          <option value="中" selected>中型</option>
+          <option value="中">中型</option>
           <option value="大">大型</option>
         </select>
+        <div id="size-error" class="error-text">請務必選擇體型！</div>
       </div>
 
       <div class="form-group">
-        <label>毛長：</label>
+        <label>毛長<span class="required">*</span>：</label>
         <select id="fur_length">
+          <option value="">-- 請選擇毛長 --</option>
           <option value="短毛">短毛</option>
           <option value="長毛">長毛</option>
           <option value="捲毛">捲毛</option>
         </select>
+        <div id="fur-error" class="error-text">請務必選擇毛長！</div>
       </div>
 
       <div class="btn-group">
         <div></div>
-        <button type="button" class="btn-primary" onclick="nextStep(2)">下一步 ➔</button>
+        <button type="button" class="btn-primary" onclick="validateStep1AndNext()">下一步 ➔</button>
       </div>
     </div>
 
-    <!-- ===== Step 2: 外觀特徵 ===== -->
+    <!-- ===== Step 2: 外觀特徵（無預選，強制主動選取） ===== -->
     <div class="step-section" id="step-2">
       <h3>第二步：外觀特徵</h3>
       <div class="form-group">
-        <label>配件：</label>
+        <label>配件<span class="required">*</span>：</label>
         <select id="accessory" onchange="toggleAccessoryColor()">
+          <option value="">-- 請選擇是否有配件 --</option>
           <option value="沒有">沒有</option>
           <option value="項圈">項圈</option>
           <option value="胸背帶">胸背帶</option>
@@ -90,11 +109,13 @@
           <option value="名牌">名牌</option>
           <option value="其他">其他</option>
         </select>
+        <div id="accessory-error" class="error-text">請務必選擇配件選項！</div>
       </div>
 
       <div class="form-group" id="accessory-color-group" style="display: none;">
-        <label>配件顏色：</label>
+        <label>配件顏色<span class="required">*</span>：</label>
         <select id="accessory_color">
+          <option value="">-- 請選擇配件顏色 --</option>
           <option value="紅色">紅色</option>
           <option value="藍色">藍色</option>
           <option value="黃色">黃色</option>
@@ -102,22 +123,26 @@
           <option value="黑色">黑色</option>
           <option value="其他">其他</option>
         </select>
+        <div id="accessory-color-error" class="error-text">請務必選擇配件顏色！</div>
       </div>
 
       <div class="form-group">
-        <label>毛色色系 (分組降誤判)：</label>
+        <label>毛色色系 (分組降誤判)<span class="required">*</span>：</label>
         <select id="fur_color">
+          <option value="">-- 請選擇毛色色系 --</option>
           <option value="黑/深棕">黑 / 深棕</option>
           <option value="白/米白/淺黃">白 / 米白 / 淺黃</option>
           <option value="黃/棕/褐色">黃 / 棕 / 褐色</option>
           <option value="虎斑/花紋">虎斑 / 花紋</option>
           <option value="三花/雙色">三花 / 雙色</option>
         </select>
+        <div id="fur-color-error" class="error-text">請務必選擇毛色色系！</div>
       </div>
 
       <div class="form-group">
-        <label>特殊記號：</label>
+        <label>特殊記號<span class="required">*</span>：</label>
         <select id="special_mark">
+          <option value="">-- 請選擇特殊記號 --</option>
           <option value="沒有">沒有</option>
           <option value="白襪子">白襪子</option>
           <option value="胸前白斑">胸前白斑</option>
@@ -127,6 +152,7 @@
           <option value="跛腳">跛腳</option>
           <option value="其他">其他</option>
         </select>
+        <div id="special-mark-error" class="error-text">請務必選擇是否有特殊記號！</div>
       </div>
 
       <div class="form-group">
@@ -136,24 +162,21 @@
 
       <div class="btn-group">
         <button type="button" onclick="prevStep(1)">⬅ 上一步</button>
-        <button type="button" class="btn-primary" onclick="nextStep(3)">下一步 ➔</button>
+        <button type="button" class="btn-primary" onclick="validateStep2AndNext()">下一步 ➔</button>
       </div>
     </div>
 
-    <!-- ===== Step 3: 照片上傳欄位（含即時預覽） ===== -->
+    <!-- ===== Step 3: 照片上傳欄位 ===== -->
     <div class="step-section" id="step-3">
       <h3>第三步：寵物照片 (1 必填 + 2 選填)</h3>
       
       <!-- 照片 1 -->
       <div class="form-group">
-        <label>第 1 張：全身照 <span style="color:red;">*必填</span></label>
+        <label>第 1 張：全身照<span class="required">*必填</span></label>
         <input type="file" id="photo_1" accept="image/*" onchange="previewImage(this, 'preview_1')">
-        <div class="tag">標籤：全身 (供協尋者對比體型與主毛色)</div>
+        <div class="tag">標籤：全身 (供比對體型與主要毛色)</div>
+        <div id="photo1-error" class="error-text">請務必上傳第 1 張全身照！</div>
         <img id="preview_1" class="img-preview" alt="預覽圖1">
-        <div style="margin-top: 8px;">
-          <button type="button" onclick="testUploadPhoto1()">📤 測試單獨上傳第 1 張</button>
-          <span id="upload-status" style="margin-left: 8px; font-size: 13px; color: #2563eb;"></span>
-        </div>
       </div>
 
       <!-- 照片 2 -->
@@ -174,7 +197,7 @@
 
       <div class="btn-group">
         <button type="button" onclick="prevStep(2)">⬅ 上一步</button>
-        <button type="button" class="btn-primary" onclick="nextStep(4)">下一步 ➔</button>
+        <button type="button" class="btn-primary" onclick="validateStep3AndNext()">下一步 ➔</button>
       </div>
     </div>
 
@@ -183,12 +206,13 @@
       <h3>第四步：時間地點與聯絡資訊</h3>
       
       <div class="form-group">
-        <label>走失地點座標：</label>
+        <label>走失地點座標<span class="required">*</span>：</label>
         <button type="button" onclick="getLocation()">📍 帶入目前位置</button>
         <div style="margin-top: 5px;">
           緯度：<input type="text" id="lat" readonly placeholder="點擊按鈕自動填入"><br>
           經度：<input type="text" id="lng" readonly placeholder="點擊按鈕自動填入" style="margin-top:4px;">
         </div>
+        <div id="location-error" class="error-text">請務必點擊按鈕帶入有效座標！</div>
       </div>
 
       <div class="form-group">
@@ -198,18 +222,19 @@
       </div>
 
       <div class="form-group">
-        <label>走失時間：</label>
+        <label>走失時間<span class="required">*</span>：</label>
         <input type="datetime-local" id="lost_time">
+        <div id="time-error" class="error-text">請填寫具體的走失時間！</div>
       </div>
 
       <div class="form-group">
-        <label>飼主聯絡 Email (絕不對外公開)：</label>
+        <label>飼主聯絡 Email (不公開，接收符合通知用)<span class="required">*</span>：</label>
         <input type="email" id="email" placeholder="example@gmail.com">
+        <div id="email-error" class="error-text">請填寫正確有效的 Email 格式！</div>
       </div>
 
       <div class="btn-group">
         <button type="button" onclick="prevStep(3)">⬅ 上一步</button>
-        <!-- 正式解鎖送出按鈕 -->
         <button type="button" class="btn-primary" onclick="submitLostReport()">📢 確認發布走失公告</button>
       </div>
       <div id="submit-status" style="margin-top: 15px; font-weight: bold; text-align: center;"></div>
@@ -217,7 +242,6 @@
   </form>
 
   <script>
-    // 步驟切換邏輯
     function showStep(step) {
       document.querySelectorAll('.step-section').forEach(el => el.classList.remove('active'));
       document.getElementById('step-' + step).classList.add('active');
@@ -231,72 +255,158 @@
     function toggleAccessoryColor() {
       const acc = document.getElementById('accessory').value;
       const colorGroup = document.getElementById('accessory-color-group');
-      colorGroup.style.display = (acc === '沒有') ? 'none' : 'block';
+      if (acc === '' || acc === '沒有') {
+        colorGroup.style.display = 'none';
+        document.getElementById('accessory_color').value = '';
+        document.getElementById('accessory-color-error').style.display = 'none';
+        document.getElementById('accessory_color').classList.remove('input-error');
+      } else {
+        colorGroup.style.display = 'block';
+      }
+    }
+
+    // Step 1 必填校驗（未手動選取則紅框阻擋）
+    function validateStep1AndNext() {
+      let isValid = true;
+      const fields = [
+        { id: 'species', err: 'species-error' },
+        { id: 'size', err: 'size-error' },
+        { id: 'fur_length', err: 'fur-error' }
+      ];
+
+      fields.forEach(item => {
+        const el = document.getElementById(item.id);
+        const errEl = document.getElementById(item.err);
+        if (!el.value) {
+          el.classList.add('input-error');
+          errEl.style.display = 'block';
+          isValid = false;
+        } else {
+          el.classList.remove('input-error');
+          errEl.style.display = 'none';
+        }
+      });
+
+      if (!isValid) {
+        alert("【必填提示】請完整選擇物種、體型與毛長！");
+        return;
+      }
+      nextStep(2);
+    }
+
+    // Step 2 必填校驗（配件、顏色、毛色、記號強制手動選取）
+    function validateStep2AndNext() {
+      let isValid = true;
+      const acc = document.getElementById('accessory');
+      const accErr = document.getElementById('accessory-error');
+      const color = document.getElementById('accessory_color');
+      const colorErr = document.getElementById('accessory-color-error');
+      const furColor = document.getElementById('fur_color');
+      const furColorErr = document.getElementById('fur-color-error');
+      const mark = document.getElementById('special_mark');
+      const markErr = document.getElementById('special-mark-error');
+
+      // 檢查配件
+      if (!acc.value) {
+        acc.classList.add('input-error');
+        accErr.style.display = 'block';
+        isValid = false;
+      } else {
+        acc.classList.remove('input-error');
+        accErr.style.display = 'none';
+      }
+
+      // 若有配件，檢查配件顏色
+      if (acc.value && acc.value !== '沒有') {
+        if (!color.value) {
+          color.classList.add('input-error');
+          colorErr.style.display = 'block';
+          isValid = false;
+        } else {
+          color.classList.remove('input-error');
+          colorErr.style.display = 'none';
+        }
+      }
+
+      // 檢查毛色色系
+      if (!furColor.value) {
+        furColor.classList.add('input-error');
+        furColorErr.style.display = 'block';
+        isValid = false;
+      } else {
+        furColor.classList.remove('input-error');
+        furColorErr.style.display = 'none';
+      }
+
+      // 檢查特殊記號
+      if (!mark.value) {
+        mark.classList.add('input-error');
+        markErr.style.display = 'block';
+        isValid = false;
+      } else {
+        mark.classList.remove('input-error');
+        markErr.style.display = 'none';
+      }
+
+      if (!isValid) {
+        alert("【必填提示】請確認外觀特徵（配件、顏色、毛色、記號）皆已選取！");
+        return;
+      }
+      nextStep(3);
+    }
+
+    // Step 3 必填校驗：第 1 張全身照必選
+    function validateStep3AndNext() {
+      const photo1 = document.getElementById('photo_1');
+      const errText = document.getElementById('photo1-error');
+
+      if (!photo1.files || photo1.files.length === 0) {
+        errText.style.display = 'block';
+        alert("【必填提示】請至少上傳第 1 張全身照！");
+        return;
+      } else {
+        errText.style.display = 'none';
+      }
+      nextStep(4);
     }
 
     // 瀏覽器 GPS 定位帶入
     function getLocation() {
+      const locErr = document.getElementById('location-error');
       if (!navigator.geolocation) {
-        alert("瀏覽器不支援定位");
+        alert("瀏覽器不支援定位功能");
         return;
       }
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           document.getElementById('lat').value = pos.coords.latitude.toFixed(6);
           document.getElementById('lng').value = pos.coords.longitude.toFixed(6);
+          locErr.style.display = 'none';
         },
         (err) => {
-          alert("無法取得定位，請確認授權");
+          alert("無法取得定位，請確認已授權瀏覽器讀取位置資訊");
         },
         { enableHighAccuracy: true }
       );
     }
 
-    // 照片即時預覽函式（純前端，原生 Web API，零伺服器負擔）
+    // 純前端照片即時預覽
     function previewImage(inputElement, previewImgId) {
       const img = document.getElementById(previewImgId);
+      const photo1Err = document.getElementById('photo1-error');
       if (inputElement.files && inputElement.files[0]) {
         img.src = URL.createObjectURL(inputElement.files[0]);
         img.style.display = 'block';
+        if (inputElement.id === 'photo_1' && photo1Err) {
+          photo1Err.style.display = 'none';
+        }
       } else {
         img.src = '';
         img.style.display = 'none';
       }
     }
 
-    // 檢查點二：獨立測試照片上傳
-    async function testUploadPhoto1() {
-      const fileInput = document.getElementById('photo_1');
-      const statusText = document.getElementById('upload-status');
-
-      if (!fileInput.files || fileInput.files.length === 0) {
-        alert("請先選擇一張照片！");
-        return;
-      }
-
-      statusText.innerText = "上傳中...";
-
-      const formData = new FormData();
-      formData.append('photo', fileInput.files[0]);
-
-      try {
-        const res = await fetch('/api/upload', {
-          method: 'POST',
-          body: formData
-        });
-        const data = await res.json();
-
-        if (res.ok) {
-          statusText.innerText = `✅ 上傳成功！路徑: ${data.file_path}`;
-        } else {
-          statusText.innerText = `❌ 失敗: ${data.error}`;
-        }
-      } catch (err) {
-        statusText.innerText = "❌ 網路或伺服器連線失敗";
-      }
-    }
-
-    // 上傳單一檔案的輔助函式
+    // 自動上傳單一檔案至伺服器
     async function uploadSinglePhoto(fileInputId) {
       const fileInput = document.getElementById(fileInputId);
       if (!fileInput.files || fileInput.files.length === 0) return '';
@@ -315,27 +425,50 @@
       return '';
     }
 
-    // 檢查點三：表單完整送出主函式
+    // 完整送出防呆校驗與後端寫入
     async function submitLostReport() {
       const statusBox = document.getElementById('submit-status');
-
-      // 基本防呆檢查
       const photo1 = document.getElementById('photo_1').files[0];
       const lat = document.getElementById('lat').value;
       const lng = document.getElementById('lng').value;
+      const lostTime = document.getElementById('lost_time').value;
       const email = document.getElementById('email').value.trim();
 
+      document.getElementById('location-error').style.display = 'none';
+      document.getElementById('time-error').style.display = 'none';
+      document.getElementById('email-error').style.display = 'none';
+
       if (!photo1) {
-        alert("【必填提示】請在 Step 3 上傳第 1 張全身照！");
+        alert("【必填攔截】第 1 張全身照為必填項目！");
         showStep(3);
         return;
       }
       if (!lat || !lng) {
-        alert("【必填提示】請在 Step 4 點擊「帶入目前位置」取得座標！");
+        document.getElementById('location-error').style.display = 'block';
+        alert("【必填攔截】請點擊「📍 帶入目前位置」取得走失座標！");
         return;
       }
-      if (!email) {
-        alert("【必填提示】請在 Step 4 填寫聯絡 Email！");
+      if (!lostTime) {
+        document.getElementById('time-error').style.display = 'block';
+        document.getElementById('lost_time').focus();
+        alert("【必填攔截】請填寫走失時間！");
+        return;
+      }
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!email || !emailRegex.test(email)) {
+        document.getElementById('email-error').style.display = 'block';
+        document.getElementById('email').focus();
+        alert("【格式錯誤】請填寫正確有效的 Email 信箱！");
+        return;
+      }
+
+      const confirmMsg = `請確認以下公告資訊：\n\n` +
+        `• 寵物：${document.getElementById('species').value}（${document.getElementById('fur_color').value} / ${document.getElementById('size').value}型）\n` +
+        `• 走失時間：${lostTime}\n` +
+        `• 飼主 Email：${email}\n\n` +
+        `確認送出後，系統將依設定偏移座標並發布於地圖。`;
+
+      if (!confirm(confirmMsg)) {
         return;
       }
 
@@ -343,15 +476,11 @@
       statusBox.innerText = "⏳ 正在上傳照片並建立走失公告...";
 
       try {
-        // 1. 照片依序上傳，取得雲端路徑
         const photoPath1 = await uploadSinglePhoto('photo_1');
         const photoPath2 = await uploadSinglePhoto('photo_2');
         const photoPath3 = await uploadSinglePhoto('photo_3');
-
-        // 2. 取得隱私模糊半徑選取值
         const privacyRadius = document.querySelector('input[name="privacy_radius"]:checked').value;
 
-        // 3. 打包完整表單 JSON
         const payload = {
           species: document.getElementById('species').value,
           size: document.getElementById('size').value,
@@ -367,11 +496,10 @@
           lat: lat,
           lng: lng,
           privacy_radius: privacyRadius,
-          lost_time: document.getElementById('lost_time').value,
+          lost_time: lostTime,
           email: email
         };
 
-        // 4. 發送至後端
         const response = await fetch('/api/lost_reports', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
