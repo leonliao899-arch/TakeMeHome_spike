@@ -64,8 +64,14 @@ def calculate_match(lost, sighting):
   s_mark = sighting.get("special_mark", "沒有")
 
   if l_mark == "看不清楚" or s_mark == "看不清楚":
-    mark_score = 10  # 中立容錯
-    mark_note = "其中一方看不清楚 (給中立分 10 分)"
+    if {l_mark, s_mark} == {"沒有", "看不清楚"}:
+      # 一方說「沒有記號」、另一方「看不清楚」：看不清楚代表沒看到任何矛盾，
+      # 不該比回答「沒有」更吃虧，比照「雙方皆無」給 20 分
+      mark_score = 20
+      mark_note = "一方沒有記號、另一方看不清楚 (比照雙方皆無 +20)"
+    else:
+      mark_score = 10  # 中立容錯
+      mark_note = "其中一方看不清楚 (給中立分 10 分)"
   elif l_mark != "沒有" and l_mark == s_mark:
     mark_score = 35  # 完全吻合
     mark_note = f"特殊記號完全吻合 ({l_mark}) (+35)"

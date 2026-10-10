@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>通報詳情 - TakeMeHome</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0 auto; padding: 16px 16px 40px; max-width: 500px;
+      line-height: 1.5; color: #333; background: #fff;
+    }
+    .top-bar a { color: #2563eb; text-decoration: none; font-weight: bold; font-size: 14px; }
+    h3 { font-size: 16px; color: #1e3a8a; margin: 20px 0 10px; }
+
+    /* 最上方：距離與距今多久 */
+    .headline {
+      margin-top: 12px; padding: 14px; border-radius: 10px; background: #eff6ff;
+      border: 1px solid #bfdbfe;
+    }
+    .headline .row { display: flex; gap: 10px; }
+    .headline .stat { flex: 1; text-align: center; }
+    .headline .num { font-size: 22px; font-weight: bold; color: #1e3a8a; }
+    .headline .label { font-size: 12px; color: #64748b; }
+    .headline .level { text-align: center; margin-top: 8px; font-weight: bold; }
+    .picked-tag {
+      display: block; text-align: center; font-size: 13px; font-weight: bold; color: #92400e;
+      background: #fde68a; border-radius: 8px; padding: 4px 8px; margin-top: 8px;
+    }
+
+    /* 照片並排：左邊目擊照、右邊飼主原照，各自主圖＋縮圖列 */
+    .photo-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .photo-col .col-title { font-size: 13px; font-weight: bold; color: #475569; margin-bottom: 4px; }
+    .main-photo {
+      width: 100%; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 8px;
+      background: #f1f5f9; display: flex; align-items: center; justify-content: center;
+      font-size: 34px; color: #94a3b8;
+    }
+    .thumbs { display: flex; gap: 6px; margin-top: 6px; }
+    .thumbs img {
+      width: 44px; height: 44px; object-fit: cover; border-radius: 6px; cursor: pointer;
+      border: 2px solid transparent; opacity: 0.7;
+    }
+    .thumbs img.active { border-color: #2563eb; opacity: 1; }
+
+    /* 特徵並排 */
+    .compare { border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden; font-size: 14px; }
+    .cmp-head, .cmp-row {
+      display: grid; grid-template-columns: 72px 1fr 1fr 28px; gap: 6px; padding: 8px 10px;
+      align-items: center;
+    }
+    .cmp-head { background: #f8fafc; font-size: 12px; color: #64748b; font-weight: bold; }
+    .cmp-row { border-top: 1px solid #f1f5f9; }
+    .cmp-row .lbl { color: #64748b; font-size: 13px; }
+    .cmp-row .val { font-weight: bold; word-break: break-all; }
+    .cmp-row .icon { text-align: center; }
+    .cmp-note { grid-column: 2 / 5; font-size: 12px; color: #64748b; font-weight: normal; margin-top: -4px; }
+    .st-match { background: #f0fdf4; }
+    .st-partial, .st-maybe { background: #fffbeb; }
+    .st-unclear { background: #f8fafc; }
+    .st-diff { background: #fef2f2; }
+
+    .desc-box {
+      background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 12px;
+      font-size: 15px;
+    }
+
+    /* 底部按鈕 */
+    .actions { margin-top: 24px; display: flex; flex-direction: column; gap: 10px; }
+    button {
+      padding: 13px; font-size: 16px; border-radius: 8px; cursor: pointer; font-weight: bold;
+    }
+    .btn-yes { background: #16a34a; color: #fff; border: none; }
+    .btn-no { background: #fff; color: #475569; border: 1px solid #cbd5e1; }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    .result {
+      text-align: center; border-radius: 10px; padding: 18px; margin-top: 20px; font-weight: bold;
+    }
+    .result .big { font-size: 44px; }
+    .result.found { background: #dcfce7; color: #166534; }
+    .result.rejected { background: #f1f5f9; color: #475569; }
+    .result a { display: inline-block; margin-top: 10px; color: #2563eb; }
+
+    /* 自製確認彈窗（與表單同一套樣式） */
+    .modal-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+      z-index: 9999; align-items: center; justify-content: center; padding: 15px;
+    }
+    .modal-card {
+      background: #fff; width: 100%; max-width: 400px; border-radius: 12px; padding: 20px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.25); text-align: center;
+    }
+    .modal-card h3 { margin-top: 0; }
+    .modal-card p { font-size: 14px; color: #475569; }
+    .modal-actions { display: flex; gap: 12px; margin-top: 16px; }
+    .modal-actions button { flex: 1; font-size: 15px; }
+    .error { color: #dc2626; text-align: center; padding: 30px 0; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="top-bar"><a href="/case/{{ lost_id }}">⬅ 回到通知清單</a></div>
+  <div id="content"><div style="text-align:center; padding:40px 0; color:#64748b;">⏳ 載入中…</div></div>
+
+  <div class="modal-overlay" id="modal">
+    <div class="modal-card">
+      <h3 id="modalTitle"></h3>
+      <p id="modalText"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn-no" onclick="closeModal()">再看看</button>
+        <button type="button" id="modalOk">確定</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const LOST_ID = {{ lost_id }};
+    const SIGHTING_ID = {{ sighting_id }};
+    const STATUS_ICON = { match: '✅', partial: '🟡', maybe: '🟡', unclear: '❔', diff: '❌' };
+
+    function el(tag, className, text) {
+      const e = document.createElement(tag);
+      if (className) e.className = className;
+      if (text !== undefined) e.textContent = text;
+      return e;
+    }
+
+    function timeAgo(text) {
+      const t = new Date(String(text).replace(' ', 'T'));
+      if (isNaN(t)) return '—';
+      const mins = Math.round((Date.now() - t.getTime()) / 60000);
+      if (mins < 1) return '剛剛';
+      if (mins < 60) return `${mins} 分鐘前`;
+      const hours = Math.round(mins / 60);
+      if (hours < 24) return `${hours} 小時前`;
+      return `${Math.round(hours / 24)} 天前`;
+    }
+
+    function formatKm(km) {
+      return km < 1 ? `${Math.round(km * 1000)} 公尺` : `${km} 公里`;
+    }
+
+    // 一欄照片：主圖＋縮圖列（點縮圖切換主圖）
+    function photoColumn(title, paths) {
+      const col = el('div', 'photo-col');
+      col.appendChild(el('div', 'col-title', title));
+      const list = paths.filter(Boolean);
+      if (list.length === 0) {
+        col.appendChild(el('div', 'main-photo', '🐾'));
+        return col;
+      }
+      const main = el('img', 'main-photo');
+      main.src = list[0];
+      main.alt = title;
+      col.appendChild(main);
+      if (list.length > 1) {
+        const row = el('div', 'thumbs');
+        list.forEach((p, i) => {
+          const t = el('img', i === 0 ? 'active' : '');
+          t.src = p;
+          t.alt = `${title} ${i + 1}`;
+          t.onclick = () => {
+            main.src = p;
+            row.querySelectorAll('img').forEach(x => x.classList.remove('active'));
+            t.classList.add('active');
+          };
+          row.appendChild(t);
+        });
+        col.appendChild(row);
+      }
+      return col;
+    }
+
+    async function load() {
+      const box = document.getElementById('content');
+      try {
+        const res = await fetch(`/api/lost_reports/${LOST_ID}/sightings/${SIGHTING_ID}`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          box.innerHTML = '';
+          box.appendChild(el('div', 'error', data.error || '載入失敗'));
+          return;
+        }
+        render(data);
+      } catch (err) {
+        box.innerHTML = '<div class="error">❌ 載入失敗，請檢查網路後重新整理。</div>';
+      }
+    }
+
+    function render(d) {
+      const { lost, sighting, match } = d;
+      const box = document.getElementById('content');
+      box.innerHTML = '';
+
+      // 1. 最上方：距離與距今多久
+      const head = el('div', 'headline');
+      const row = el('div', 'row');
+      [[formatKm(match.distance_km), '距離走失地點'],
+       [timeAgo(sighting.sighting_time), `目擊於 ${sighting.sighting_time}`]].forEach(([num, label]) => {
+        const s = el('div', 'stat');
+        s.appendChild(el('div', 'num', num));
+        s.appendChild(el('div', 'label', label));
+        row.appendChild(s);
+      });
+      head.appendChild(row);
+      head.appendChild(el('div', 'level', `${match.match_level}・外觀 ${match.appearance_score} 分`));
+      if (d.manually_confirmed) head.appendChild(el('div', 'picked-tag', '⭐ 協尋者看過你的公告，指認就是這隻'));
+      box.appendChild(head);
+
+      // 2. 照片並排
+      box.appendChild(el('h3', '', '📷 照片比對'));
+      const cols = el('div', 'photo-cols');
+      cols.appendChild(photoColumn('目擊照片', [sighting.photo_1, sighting.photo_2, sighting.photo_3]));
+      cols.appendChild(photoColumn(`你的${lost.pet_name || '寶貝'}`, [lost.photo_1, lost.photo_2, lost.photo_3]));
+      box.appendChild(cols);
+
+      // 3. 特徵並排
+      box.appendChild(el('h3', '', '🔍 特徵比對'));
+      const table = el('div', 'compare');
+      const header = el('div', 'cmp-head');
+      ['', '你的寶貝', '目擊', ''].forEach(t => header.appendChild(el('div', '', t)));
+      table.appendChild(header);
+      d.compare.forEach(c => {
+        const r = el('div', 'cmp-row st-' + c.status);
+        r.appendChild(el('div', 'lbl', c.label));
+        r.appendChild(el('div', 'val', c.lost));
+        r.appendChild(el('div', 'val', c.sighting));
+        r.appendChild(el('div', 'icon', STATUS_ICON[c.status] || ''));
+        if (c.note) r.appendChild(el('div', 'cmp-note', c.note));
+        table.appendChild(r);
+      });
+      box.appendChild(table);
+
+      // 4. 目擊位置描述
+      box.appendChild(el('h3', '', '📍 目擊位置描述'));
+      box.appendChild(el('div', 'desc-box', sighting.description || '協尋者沒有填寫描述'));
+
+      // 5. 操作按鈕（依狀態決定要不要顯示）
+      const actions = el('div');
+      actions.id = 'actions';
+      box.appendChild(actions);
+
+      if (lost.status !== '尋找中') {
+        showResult(lost.status === '已尋回' ? 'found' : 'rejected',
+          lost.status === '已尋回' ? `${lost.pet_name || '寶貝'}已經回家了！這則公告已結案。` : `這則公告目前是「${lost.status}」。`);
+      } else if (d.rejected_by_owner) {
+        showResult('rejected', '你已經標記這筆通報「不是我的寶貝」。');
+      } else {
+        const yes = el('button', 'btn-yes', '💖 這是我的寶貝');
+        const no = el('button', 'btn-no', '不是我的寶貝');
+        yes.type = no.type = 'button';
+        yes.onclick = () => openModal('確定是你的寶貝嗎？',
+          '確認後公告會標為「已尋回」，地圖上的紅色圖釘會移除，系統也會停止比對新的通報。',
+          '是，牠回家了', 'btn-yes', confirmFound);
+        no.onclick = () => openModal('不是你的寶貝？',
+          '這筆通報會從你的通知清單移除，地圖上會變成灰色圖釘。',
+          '不是', 'btn-no', rejectSighting);
+        const wrap = el('div', 'actions');
+        wrap.appendChild(yes);
+        wrap.appendChild(no);
+        actions.appendChild(wrap);
+      }
+    }
+
+    function showResult(kind, text) {
+      const actions = document.getElementById('actions');
+      actions.innerHTML = '';
+      const r = el('div', 'result ' + kind);
+      r.appendChild(el('div', 'big', kind === 'found' ? '🎉' : '🙏'));
+      r.appendChild(el('div', '', text));
+      const link = el('a', '', kind === 'found' ? '🗺️ 回到地圖' : '⬅ 回到通知清單');
+      link.href = kind === 'found' ? '/' : `/case/${LOST_ID}`;
+      r.appendChild(link);
+      actions.appendChild(r);
+    }
+
+    // 自製確認彈窗
+    let modalAction = null;
+    function openModal(title, text, okText, okClass, action) {
+      document.getElementById('modalTitle').textContent = title;
+      document.getElementById('modalText').textContent = text;
+      const ok = document.getElementById('modalOk');
+      ok.textContent = okText;
+      ok.className = okClass;
+      ok.disabled = false;
+      modalAction = action;
+      document.getElementById('modal').style.display = 'flex';
+    }
+    function closeModal() { document.getElementById('modal').style.display = 'none'; }
+    document.getElementById('modalOk').onclick = async () => {
+      document.getElementById('modalOk').disabled = true;   // 防止連點
+      await modalAction();
+      closeModal();
+    };
+
+    async function postJson(url) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sighting_id: SIGHTING_ID })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || '操作失敗');
+      return data;
+    }
+
+    async function confirmFound() {
+      try {
+        await postJson(`/api/lost_reports/${LOST_ID}/confirm_found`);
+        showResult('found', '恭喜！已標記為「已尋回」，謝謝協尋者的幫忙。');
+      } catch (err) {
+        alert('❌ ' + err.message);
+      }
+    }
+
+    async function rejectSighting() {
+      try {
+        await postJson(`/api/lost_reports/${LOST_ID}/reject_sighting`);
+        showResult('rejected', '已記錄，這筆通報不會再出現在你的通知清單。');
+      } catch (err) {
+        alert('❌ ' + err.message);
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>

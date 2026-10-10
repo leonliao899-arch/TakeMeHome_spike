@@ -4,6 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>發布走失公告</title>
+
+  <!-- Leaflet：第四步的小地圖（定位被拒絕或不準時，改用點地圖選位置） -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -47,6 +51,17 @@
       margin-top: 4px;
       display: none;
     }
+
+    /* ===== 走失地點小地圖 ===== */
+    #lostMap {
+      height: 220px;
+      border-radius: 8px;
+      border: 1px solid #cbd5e1;
+      margin-top: 8px;
+      z-index: 0;
+    }
+    .loc-status { font-size: 13px; color: #475569; margin-top: 6px; }
+    .loc-status.ok { color: #16a34a; font-weight: bold; }
 
     /* ===== AI 預填相關樣式 ===== */
     .ai-hint {
@@ -351,13 +366,15 @@
       <h3>第四步：時間地點與聯絡資訊</h3>
 
       <div class="form-group">
-        <label>走失地點座標<span class="required">*</span>：</label>
-        <button type="button" onclick="getLocation()">📍 帶入目前位置</button>
-        <div style="margin-top: 5px;">
-          緯度：<input type="text" id="lat" readonly placeholder="點擊按鈕自動填入"><br>
-          經度：<input type="text" id="lng" readonly placeholder="點擊按鈕自動填入" style="margin-top:4px;">
-        </div>
-        <div id="location-error" class="error-text">請務必點擊按鈕帶入有效座標！</div>
+        <label>走失地點<span class="required">*</span>：</label>
+        <button type="button" id="gpsBtn" onclick="getLocation()">📍 帶入目前位置</button>
+        <!-- 小地圖：GPS 帶入後可再點地圖微調；GPS 被拒絕時直接點地圖選位置 -->
+        <div id="lostMap"></div>
+        <div class="loc-status" id="locStatus">也可以直接點地圖，選擇寵物走失的位置。</div>
+        <!-- 座標存在隱藏欄位，送出時照舊讀取 lat / lng -->
+        <input type="hidden" id="lat">
+        <input type="hidden" id="lng">
+        <div id="location-error" class="error-text">請按「帶入目前位置」或在地圖上點選走失地點！</div>
       </div>
 
       <div class="form-group">
@@ -401,12 +418,15 @@
     </div>
   </div>
 
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     function showStep(step) {
       document.querySelectorAll('.step-section').forEach(el => el.classList.remove('active'));
       document.getElementById('step-' + step).classList.add('active');
       document.getElementById('step-indicator').innerText = step;
       window.scrollTo(0, 0);
+      // Leaflet 在隱藏的區塊裡初始化會算錯尺寸，顯示第四步時要重新計算
+      if (step === 4) setTimeout(() => lostMap.invalidateSize(), 50);
     }
     function nextStep(step) { showStep(step); }
     function prevStep(step) { showStep(step); }
@@ -655,22 +675,62 @@
       nextStep(4);
     }
 
+    // ==========================================
+    // 📍 走失地點：GPS 一鍵帶入，或點地圖手動選擇
+    // ==========================================
+    const DAAN_CENTER = [25.026, 121.543];   // 地圖預設大安區
+    const lostMap = L.map('lostMap').setView(DAAN_CENTER, 15);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '&copy; OpenStreetMap'
+    }).addTo(lostMap);
+    let lostMarker = null;
+
+    // 不論座標來自 GPS 或點地圖，都走這個函式：寫入隱藏欄位、移動紅點、更新提示
+    function setLostLocation(lat, lng, source) {
+      document.getElementById('lat').value = lat.toFixed(6);
+      document.getElementById('lng').value = lng.toFixed(6);
+      if (lostMarker) {
+        lostMarker.setLatLng([lat, lng]);
+      } else {
+        lostMarker = L.circleMarker([lat, lng], {
+          radius: 10, fillColor: '#ef4444', color: '#fff', weight: 3, fillOpacity: 0.95
+        }).addTo(lostMap);
+      }
+      const status = document.getElementById('locStatus');
+      status.className = 'loc-status ok';
+      status.textContent = `✅ 已選定位置（${source}）。位置不對可以再點地圖修正。`;
+      document.getElementById('location-error').style.display = 'none';
+    }
+
+    lostMap.on('click', e => setLostLocation(e.latlng.lat, e.latlng.lng, '地圖點選'));
+
     function getLocation() {
-      const locErr = document.getElementById('location-error');
+      const status = document.getElementById('locStatus');
       if (!navigator.geolocation) {
-        alert("瀏覽器不支援定位功能");
+        status.className = 'loc-status';
+        status.textContent = '⚠️ 這個瀏覽器不支援定位，請直接在地圖上點選走失位置。';
         return;
       }
+      const btn = document.getElementById('gpsBtn');
+      btn.disabled = true;
+      status.className = 'loc-status';
+      status.textContent = '⏳ 正在取得定位…';
       navigator.geolocation.getCurrentPosition(
         (pos) => {
-          document.getElementById('lat').value = pos.coords.latitude.toFixed(6);
-          document.getElementById('lng').value = pos.coords.longitude.toFixed(6);
-          locErr.style.display = 'none';
+          btn.disabled = false;
+          const { latitude, longitude } = pos.coords;
+          lostMap.setView([latitude, longitude], 17);
+          setLostLocation(latitude, longitude, 'GPS');
         },
         (err) => {
-          alert("無法取得定位，請確認已授權瀏覽器讀取位置資訊");
+          // 不再跳 alert 擋住畫面，改成提示文字並引導點地圖
+          btn.disabled = false;
+          status.className = 'loc-status';
+          status.textContent = err.code === 1
+            ? '⚠️ 沒有定位權限，請直接在地圖上點選走失位置。'
+            : '⚠️ 暫時抓不到定位，請直接在地圖上點選走失位置。';
         },
-        { enableHighAccuracy: true }
+        { enableHighAccuracy: true, timeout: 10000 }
       );
     }
 
@@ -725,7 +785,7 @@
       }
       if (!lat || !lng) {
         document.getElementById('location-error').style.display = 'block';
-        alert("【必填攔截】請點擊「📍 帶入目前位置」取得走失座標！");
+        alert("【必填攔截】請按「📍 帶入目前位置」，或在地圖上點選走失地點！");
         return;
       }
       if (!lostTime) {
@@ -783,6 +843,20 @@
       document.getElementById('summaryModal').style.display = 'none';
     }
 
+    // ==========================================
+    // 📂 我的案件：存在瀏覽器的 localStorage（只在這台裝置、這個瀏覽器有效）
+    // 沒有會員登入，這是讓飼主不用記網址也能回到案件頁的輕量做法；
+    // 存取失敗（例如無痕模式）就略過，不影響發布
+    // ==========================================
+    function saveMyCase(id, caseCode, petName) {
+      try {
+        const list = JSON.parse(localStorage.getItem('myCases') || '[]')
+          .filter(c => c.id !== id);
+        list.unshift({ id: id, case_code: caseCode, pet_name: petName });
+        localStorage.setItem('myCases', JSON.stringify(list.slice(0, 10)));
+      } catch (e) { /* 無法存取就略過 */ }
+    }
+
     async function executeSubmit() {
       closeSummaryModal();
       const statusBox = document.getElementById('submit-status');
@@ -826,11 +900,15 @@
         const result = await response.json();
 
         if (response.ok) {
+          // 把案件記在這支手機的瀏覽器裡，之後從地圖的「📂 我的案件」就能找回來
+          saveMyCase(result.id, result.case_code, payload.pet_name);
           statusBox.style.color = '#16a34a';
           statusBox.innerHTML = `
             🎉 公告發布成功！<br>
             案件編號：<strong>${result.case_code}</strong><br>
-            公開模糊座標：${result.lat_public}, ${result.lng_public}<br>
+            <br>
+            <a href="/case/${result.id}" style="display:block; padding:12px; background:#2563eb; color:#fff; border-radius:6px; text-decoration:none;">🔔 查看我的案件通知</a>
+            <div style="font-size:12px; color:#64748b; margin-top:6px;">請把案件頁加入書籤，之後有人通報才找得到</div>
             <br>
             <a href="/" style="color: #2563eb; font-weight: bold; text-decoration: underline;">👉 返回地圖查看紅色新圖釘</a>
           `;

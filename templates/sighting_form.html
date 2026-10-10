@@ -31,6 +31,22 @@
     .progress div.active { background: #2563eb; color: #fff; font-weight: bold; }
     .progress div.done { background: #dbeafe; color: #1d4ed8; }
 
+    /* 「我看過這隻」進來時的參考公告 */
+    .ref-banner {
+      display: flex; gap: 10px; align-items: center; padding: 10px; margin-bottom: 14px;
+      border: 1px solid #fecaca; background: #fef2f2; border-radius: 10px;
+    }
+    .ref-photo {
+      width: 60px; height: 60px; border-radius: 8px; object-fit: cover; flex-shrink: 0;
+      background: #fee2e2; display: flex; align-items: center; justify-content: center; font-size: 26px;
+    }
+    .ref-title { font-weight: bold; }
+    .ref-meta { font-size: 12px; color: #64748b; }
+    .ref-tag {
+      display: inline-block; font-size: 12px; font-weight: bold; color: #b91c1c;
+      background: #fee2e2; border-radius: 10px; padding: 1px 8px; margin-bottom: 4px;
+    }
+
     .screen { display: none; }
     .screen.active { display: block; }
 
@@ -182,6 +198,16 @@
     <div id="prog-1" class="active">① 拍照</div>
     <div id="prog-2">② 確認資料</div>
     <div id="prog-3">③ 送出</div>
+  </div>
+
+  <!-- 從地圖紅色圖釘「我看過這隻」進來時，顯示參考的公告（只供對照，不會自動帶入欄位） -->
+  <div class="ref-banner" id="refBanner" style="display:none;">
+    <div class="ref-photo" id="refPhoto">🐾</div>
+    <div>
+      <div class="ref-title">你正在通報：<span id="refName"></span></div>
+      <div class="ref-meta" id="refMeta"></div>
+      <div class="ref-meta">請依你<strong>實際看到</strong>的樣子填寫，不用照公告填。</div>
+    </div>
   </div>
 
   <!-- ===== 步驟 1：拍照＋上傳（先在手機上預覽與壓縮，按最終送出才真的上傳） ===== -->
@@ -366,6 +392,31 @@
     let pickedLatLng = null;      // 目擊座標（GPS 或點地圖）
     let sightingId = null;        // 送出成功後的通報 ID（指認時要用）
     let trackingToken = null;
+
+    // 從地圖「我看過這隻」進來時，網址會帶 ?lost_id=，用來顯示參考公告
+    const REF_LOST_ID = Number(new URLSearchParams(location.search).get('lost_id')) || null;
+    let refLost = null;
+
+    async function loadRefLost() {
+      if (!REF_LOST_ID) return;
+      try {
+        const res = await fetch(`/api/lost_reports/${REF_LOST_ID}`);
+        if (!res.ok) return;                       // 找不到就當一般通報，不擋流程
+        refLost = await res.json();
+        if (refLost.status !== '尋找中') { refLost = null; return; }
+        document.getElementById('refName').textContent = refLost.pet_name || '未命名';
+        document.getElementById('refMeta').textContent =
+          `${refLost.case_code}・${refLost.species}・${refLost.size}型・${refLost.fur_color}`;
+        if (refLost.photo_1) {
+          const img = document.createElement('img');
+          img.className = 'ref-photo';
+          img.src = refLost.photo_1;
+          img.alt = '公告照片';
+          document.getElementById('refPhoto').replaceWith(img);
+        }
+        document.getElementById('refBanner').style.display = 'flex';
+      } catch (err) { /* 參考資訊載入失敗不影響通報 */ }
+    }
 
     function showScreen(n) {
       document.querySelectorAll('.screen').forEach(el => el.classList.remove('active'));
@@ -749,10 +800,17 @@
       `;
       const list = document.getElementById('candList');
 
+      // 從「我看過這隻」進來的公告排到最前面；其餘維持後端的時空分數排序
+      if (REF_LOST_ID) {
+        candidates.sort((a, b) => (b.lost_id === REF_LOST_ID) - (a.lost_id === REF_LOST_ID));
+        if (refLost && !candidates.some(c => c.lost_id === REF_LOST_ID)) list.appendChild(refMissingNote());
+      }
+
       candidates.forEach(c => {
         const card = document.createElement('div');
         card.className = 'cand-card';
         card.innerHTML = `
+          ${c.lost_id === REF_LOST_ID ? '<div class="ref-tag">📌 你剛才看的公告</div>' : ''}
           <div class="cand-head">
             <div class="cand-photo">🐾</div>
             <div>
@@ -790,6 +848,15 @@
       });
 
       document.getElementById('noneBtn').onclick = () => renderDone('not-picked');
+    }
+
+    // 參考公告沒有進入推薦清單時，誠實說明原因（外觀分數未達門檻）
+    function refMissingNote() {
+      const note = document.createElement('div');
+      note.className = 'hint';
+      note.textContent = `你剛才看的「${refLost.pet_name || '未命名'}」和你填的外觀差異較大，`
+        + '沒有列入清單。通報仍會顯示在地圖上，飼主可以自己點開查看。';
+      return note;
     }
 
     async function pickCandidate(c) {
@@ -840,6 +907,9 @@
         </div>
       `;
       area.querySelector('.done-msg').textContent = msg;
+      if (mode === 'none-found' && refLost) {
+        area.querySelector('.done-msg').after(refMissingNote());
+      }
       const link = document.getElementById('trackLink');
       link.href = trackUrl;
       link.textContent = trackUrl;
@@ -859,6 +929,7 @@
     }
 
     renderPhotos();
+    loadRefLost();
   </script>
 </body>
 </html>

@@ -64,6 +64,107 @@ def normalize_time(raw):
   return text
 
 
+# 公開給前端的欄位清單：刻意不含 email、精確座標、追蹤碼，
+# 避免任何人（包含飼主與協尋者彼此）從 API 拿到對方的聯絡方式或精確位置
+LOST_PUBLIC_FIELDS = """
+    id, case_code, pet_name, species, size, fur_length, accessory, accessory_color,
+    fur_color, special_mark, notes, photo_1, photo_2, photo_3,
+    lat_public, lng_public, lost_time, status
+"""
+SIGHTING_PUBLIC_FIELDS = """
+    id, species, size, fur_length, accessory, accessory_color, fur_color,
+    special_mark, photo_1, photo_2, photo_3, description, sighting_time,
+    status, matched_lost_id
+"""
+
+# 比對用的欄位（matcher.py 需要的 key）
+MATCH_KEYS = (
+    "species", "size", "fur_length", "accessory",
+    "accessory_color", "fur_color", "special_mark",
+)
+
+
+def lost_to_match_obj(row):
+  """把 lost_reports 的一列轉成 calculate_match() 要的字典（用精確座標計算距離）"""
+  obj = {k: row[k] for k in MATCH_KEYS}
+  obj.update(lat=row["lat_precise"], lng=row["lng_precise"], lost_time=row["lost_time"])
+  return obj
+
+
+def sighting_to_match_obj(row):
+  """把 sightings 的一列轉成 calculate_match() 要的字典"""
+  obj = {k: row[k] for k in MATCH_KEYS}
+  obj.update(lat=row["lat"], lng=row["lng"], sighting_time=row["sighting_time"])
+  return obj
+
+
+def accessory_text(acc, color):
+  """配件顯示文字：沒有 → 沒有；有 → 顏色＋類型，例如「紅色項圈」"""
+  if not acc or acc == "沒有":
+    return "沒有"
+  return f"{color or ''}{acc}"
+
+
+def build_compare(lost, sighting):
+  """詳情頁的「特徵並排」：逐欄比較飼主公告與協尋者通報，標出吻合狀態。
+
+  status 共四種，前端依此上色：
+    match   吻合
+    partial 部分吻合（體型差一級、配件同類但顏色不同）
+    maybe   可能脫落（飼主有配件、協尋者沒看到；計分規則也不扣分）
+    unclear 看不清楚（如實顯示，計分給中立分）
+    diff    不同
+  """
+  size_rank = {"小": 1, "中": 2, "大": 3}
+  rows = []
+
+  def add(label, l_val, s_val, status, note=""):
+    rows.append({"label": label, "lost": l_val, "sighting": s_val,
+                 "status": status, "note": note})
+
+  # 物種、毛長、毛色：相同即吻合
+  add("物種", lost["species"], sighting["species"],
+      "match" if lost["species"] == sighting["species"] else "diff")
+
+  # 體型：差一級仍計分，標成部分吻合
+  gap = abs(size_rank.get(lost["size"], 2) - size_rank.get(sighting["size"], 2))
+  add("體型", f"{lost['size']}型", f"{sighting['size']}型",
+      "match" if gap == 0 else ("partial" if gap == 1 else "diff"),
+      "差一級，目測容易有誤差" if gap == 1 else "")
+
+  add("毛長", lost["fur_length"], sighting["fur_length"],
+      "match" if lost["fur_length"] == sighting["fur_length"] else "diff")
+  add("毛色色系", lost["fur_color"], sighting["fur_color"],
+      "match" if lost["fur_color"] == sighting["fur_color"] else "diff")
+
+  # 配件
+  l_acc, s_acc = lost["accessory"], sighting["accessory"]
+  l_text = accessory_text(l_acc, lost["accessory_color"])
+  s_text = accessory_text(s_acc, sighting["accessory_color"])
+  if l_acc == "沒有" and s_acc == "沒有":
+    add("配件", l_text, s_text, "match", "雙方都沒有配件")
+  elif l_acc != "沒有" and s_acc == "沒有":
+    add("配件", l_text, "沒有 / 沒看到", "maybe", "走失後配件可能已脫落")
+  elif l_acc == s_acc:
+    same_color = lost["accessory_color"] == sighting["accessory_color"]
+    add("配件", l_text, s_text, "match" if same_color else "partial",
+        "" if same_color else "類型相同、顏色不同")
+  else:
+    add("配件", l_text, s_text, "diff")
+
+  # 特殊記號：「看不清楚」如實顯示
+  l_mark, s_mark = lost["special_mark"], sighting["special_mark"]
+  if "看不清楚" in (l_mark, s_mark):
+    add("特殊記號", l_mark, s_mark, "unclear", "協尋者看不清楚，請用照片確認")
+  elif l_mark == s_mark:
+    add("特殊記號", l_mark, s_mark, "match",
+        "雙方都沒有特殊記號" if l_mark == "沒有" else "")
+  else:
+    add("特殊記號", l_mark, s_mark, "diff")
+
+  return rows
+
+
 def get_db_connection():
   """建立資料庫連線，設定 row_factory 讓查詢結果能像字典一樣用欄位名稱存取"""
   conn = sqlite3.connect(DB_NAME)
@@ -141,6 +242,19 @@ def init_db():
             tracking_token TEXT,
             contact_email TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+  # 2.2 飼主排除紀錄：記下「哪一則公告的飼主」排除了「哪一筆通報」
+  #     不能只改 sightings.status，因為一筆通報可能同時符合多則公告：
+  #     飼主 A 說「不是我的」，不代表也不是飼主 B 的，B 仍然要看得到。
+  cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sighting_rejections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lost_id INTEGER NOT NULL,
+            sighting_id INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (lost_id, sighting_id)
         )
     """)
 
@@ -250,6 +364,20 @@ def sighting_form():
   return render_template("sighting_form.html")
 
 
+@app.route("/case/<int:lost_id>")
+def case_page(lost_id):
+  """飼主的案件頁（通知欄）：列出這則公告收到的目擊通報"""
+  return render_template("case.html", lost_id=lost_id)
+
+
+@app.route("/case/<int:lost_id>/sighting/<int:sighting_id>")
+def sighting_detail_page(lost_id, sighting_id):
+  """飼主看單筆通報的詳情頁：照片與特徵並排，按下確認或排除"""
+  return render_template(
+      "sighting_detail.html", lost_id=lost_id, sighting_id=sighting_id
+  )
+
+
 @app.route("/track/<token>")
 def track_sighting(token):
   """協尋者追蹤頁：用送出成功時拿到的 token 查詢自己那筆通報的最新狀態。
@@ -287,21 +415,22 @@ def get_map_data():
   cursor = conn.cursor()
 
   # 1. 撈取走失公告（隱私保護：使用公開模糊座標 lat_public / lng_public，且不外洩 Email）
+  #    photo_1 給紅色圖釘的彈出視窗顯示公告照片
   cursor.execute("""
         SELECT id, case_code, pet_name, species, size, fur_length,
                accessory, accessory_color, fur_color, special_mark,
-               lat_public AS lat, lng_public AS lng, lost_time, status
+               photo_1, lat_public AS lat, lng_public AS lng, lost_time, status
         FROM lost_reports
         WHERE status = '尋找中'
     """)
   lost_rows = cursor.fetchall()
   lost_reports = [dict(row) for row in lost_rows]
 
-  # 2. 撈取目擊通報
+  # 2. 撈取目擊通報（photo_1 給藍色圖釘的彈出視窗顯示目擊照片；不含 email 與追蹤碼）
   cursor.execute("""
         SELECT id, species, size, fur_length,
                accessory, accessory_color, fur_color, special_mark,
-               lat, lng, description, sighting_time, status
+               photo_1, lat, lng, description, sighting_time, status
         FROM sightings
     """)
   sighting_rows = cursor.fetchall()
@@ -654,22 +783,35 @@ def match_sighting(sighting_id):
 
 
 # ==========================================
-# 【檢查點四】飼主通知查詢與確認結案 API
+# 【檢查點四】飼主端 API：公告詳情、通知清單、通報詳情、確認 / 排除
 # ==========================================
+@app.route("/api/lost_reports/<int:lost_id>", methods=["GET"])
+def get_lost_report(lost_id):
+  """取單則走失公告的公開資訊（不含 email 與精確座標）。
+
+  案件頁、詳情頁、協尋者從「我看過這隻」進入通報時都會用到。
+  """
+  conn = get_db_connection()
+  row = conn.execute(
+      f"SELECT {LOST_PUBLIC_FIELDS} FROM lost_reports WHERE id = ?", (lost_id,)
+  ).fetchone()
+  conn.close()
+  if not row:
+    return jsonify({"error": f"找不到走失公告 ID {lost_id}"}), 404
+  return jsonify(dict(row)), 200
+
+
 @app.route("/api/lost_reports/<int:lost_id>/notifications", methods=["GET"])
 def get_lost_notifications(lost_id):
   """查詢特定走失公告的通知清單（即時計算版）：
 
   1. 撈出這筆走失公告本身的特徵
-  2. 撈出所有「還沒結案」的目擊通報（排除已被飼主確認/排除的）
+  2. 撈出還沒被認領的目擊通報，並排除「這則公告的飼主」已經排除過的
   3. 逐筆套用 calculate_match，外觀分數 >= 60 才算有效通知
   4. 已被協尋者手動指認（matched_lost_id = 本案）的通報，無論分數都強制納入
   5. 依時空分數由高到低排序回傳
 
-  （修正：原版只讀 sightings.score，但該欄位在自動比對時從未被寫入，
-  導致 >=60 分的候選永遠不會出現在飼主的通知清單裡。改成跟
-  create_sighting() 一樣即時計算，兩邊都不依賴預先存好的分數，
-  也能接住「飼主比協尋者晚發公告」的情況。）
+  隱私：回傳內容不含協尋者的 email 與追蹤碼。
   """
   conn = get_db_connection()
   cursor = conn.cursor()
@@ -687,49 +829,30 @@ def get_lost_notifications(lost_id):
   if not lost_row:
     conn.close()
     return jsonify({"error": f"找不到走失公告 ID {lost_id}"}), 404
+  lost_obj = lost_to_match_obj(lost_row)
 
-  lost_obj = {
-      "species": lost_row["species"],
-      "size": lost_row["size"],
-      "fur_length": lost_row["fur_length"],
-      "accessory": lost_row["accessory"],
-      "accessory_color": lost_row["accessory_color"],
-      "fur_color": lost_row["fur_color"],
-      "special_mark": lost_row["special_mark"],
-      "lat": lost_row["lat_precise"],
-      "lng": lost_row["lng_precise"],
-      "lost_time": lost_row["lost_time"],
-  }
-
-  # 2. 撈出所有還沒結案的目擊通報（已被飼主確認/排除的不再參與比對）
+  # 2. 撈出候選通報：
+  #    - 已被飼主確認（寵物已找到）的通報不再推給任何人
+  #    - 本案飼主按過「不是我的寶貝」的通報，不再出現在本案的通知欄
   cursor.execute(
       """
         SELECT id, species, size, fur_length, accessory, accessory_color,
                fur_color, special_mark, photo_1, lat, lng, description,
-               sighting_time, status, matched_lost_id, tracking_token, contact_email
+               sighting_time, status, matched_lost_id
         FROM sightings
-        WHERE status NOT IN ('飼主已確認', '飼主已排除')
-    """
+        WHERE status != '飼主已確認'
+          AND id NOT IN (
+              SELECT sighting_id FROM sighting_rejections WHERE lost_id = ?
+          )
+    """,
+      (lost_id,),
   )
   sighting_rows = cursor.fetchall()
   conn.close()
 
   notifications = []
   for row in sighting_rows:
-    sighting_obj = {
-        "species": row["species"],
-        "size": row["size"],
-        "fur_length": row["fur_length"],
-        "accessory": row["accessory"],
-        "accessory_color": row["accessory_color"],
-        "fur_color": row["fur_color"],
-        "special_mark": row["special_mark"],
-        "lat": row["lat"],
-        "lng": row["lng"],
-        "sighting_time": row["sighting_time"],
-    }
-
-    match_res = calculate_match(lost_obj, sighting_obj)
+    match_res = calculate_match(lost_obj, sighting_to_match_obj(row))
 
     # 3. 門檛判斷：外觀分數 >= 60 才算通知；但已被協尋者手動指認本案的，強制納入
     already_picked = row["matched_lost_id"] == lost_id
@@ -742,8 +865,6 @@ def get_lost_notifications(lost_id):
           "description": row["description"],
           "sighting_time": row["sighting_time"],
           "status": row["status"],
-          "tracking_token": row["tracking_token"],
-          "contact_email": row["contact_email"],
           "appearance_score": match_res["appearance_score"],
           "match_level": match_res["match_level"],
           "spatiotemporal_score": match_res["spatiotemporal_score"],
@@ -764,11 +885,60 @@ def get_lost_notifications(lost_id):
   )
 
 
+@app.route(
+    "/api/lost_reports/<int:lost_id>/sightings/<int:sighting_id>", methods=["GET"]
+)
+def get_sighting_for_lost(lost_id, sighting_id):
+  """詳情頁資料：一則公告 + 一筆通報 + 兩者的比對結果與特徵並排。
+
+  距離用後端精確座標計算，前端只拿到算好的公里數，拿不到精確座標。
+  """
+  conn = get_db_connection()
+  lost = conn.execute(
+      f"SELECT {LOST_PUBLIC_FIELDS}, lat_precise, lng_precise FROM lost_reports WHERE id = ?",
+      (lost_id,),
+  ).fetchone()
+  sighting = conn.execute(
+      f"SELECT {SIGHTING_PUBLIC_FIELDS}, lat, lng FROM sightings WHERE id = ?",
+      (sighting_id,),
+  ).fetchone()
+  rejected = conn.execute(
+      "SELECT 1 FROM sighting_rejections WHERE lost_id = ? AND sighting_id = ?",
+      (lost_id, sighting_id),
+  ).fetchone()
+  conn.close()
+
+  if not lost:
+    return jsonify({"error": f"找不到走失公告 ID {lost_id}"}), 404
+  if not sighting:
+    return jsonify({"error": f"找不到通報 ID {sighting_id}"}), 404
+
+  match_res = calculate_match(lost_to_match_obj(lost), sighting_to_match_obj(sighting))
+
+  # 回傳前拿掉精確座標
+  lost_public = {k: lost[k] for k in lost.keys() if k not in ("lat_precise", "lng_precise")}
+  sighting_public = {k: sighting[k] for k in sighting.keys() if k not in ("lat", "lng")}
+
+  return jsonify({
+      "lost": lost_public,
+      "sighting": sighting_public,
+      "match": {
+          "appearance_score": match_res["appearance_score"],
+          "match_level": match_res["match_level"],
+          "distance_km": match_res["distance_km"],
+          "spatiotemporal_score": match_res["spatiotemporal_score"],
+      },
+      "compare": build_compare(lost, sighting),
+      "manually_confirmed": sighting["matched_lost_id"] == lost_id,
+      "rejected_by_owner": bool(rejected),
+  }), 200
+
+
 @app.route("/api/lost_reports/<int:lost_id>/confirm_found", methods=["POST"])
 def confirm_found_pet(lost_id):
   """飼主點擊「這是我的寶貝！」完成確認閉環：
 
-  1. lost_reports.status -> '已尋回'（系統停止參與後續比對）
+  1. lost_reports.status -> '已尋回'（系統停止參與後續比對，地圖紅釘消失）
   2. 該公告對應的通報 sightings.status -> '飼主已確認'
   3. 回傳通知協尋者的確認訊息
   """
@@ -777,6 +947,21 @@ def confirm_found_pet(lost_id):
 
   conn = get_db_connection()
   cursor = conn.cursor()
+
+  lost = cursor.execute(
+      "SELECT status FROM lost_reports WHERE id = ?", (lost_id,)
+  ).fetchone()
+  if not lost:
+    conn.close()
+    return jsonify({"error": f"找不到走失公告 ID {lost_id}"}), 404
+  if lost["status"] != "尋找中":
+    conn.close()
+    return jsonify({"error": f"這則公告已經是「{lost['status']}」，不能重複確認"}), 409
+  if sighting_id and not cursor.execute(
+      "SELECT 1 FROM sightings WHERE id = ?", (sighting_id,)
+  ).fetchone():
+    conn.close()
+    return jsonify({"error": f"找不到通報 ID {sighting_id}"}), 404
 
   # 1. 將走失公告改為「已尋回」
   cursor.execute(
@@ -809,6 +994,49 @@ def confirm_found_pet(lost_id):
       }),
       200,
   )
+
+
+@app.route("/api/lost_reports/<int:lost_id>/reject_sighting", methods=["POST"])
+def reject_sighting(lost_id):
+  """飼主點擊「不是我的寶貝」：
+
+  1. 在 sighting_rejections 記下「這則公告排除了這筆通報」
+     → 這筆通報不再出現在本案的通知欄，但其他飼主仍看得到
+  2. sightings.status -> '飼主已排除'（地圖上變成灰色圖釘）
+     已被別的飼主確認的通報不改狀態，避免蓋掉「飼主已確認」
+  """
+  data = request.get_json() or {}
+  sighting_id = data.get("sighting_id")
+  if not sighting_id:
+    return jsonify({"error": "缺少通報 ID (sighting_id)"}), 400
+
+  conn = get_db_connection()
+  cursor = conn.cursor()
+  if not cursor.execute("SELECT 1 FROM lost_reports WHERE id = ?", (lost_id,)).fetchone():
+    conn.close()
+    return jsonify({"error": f"找不到走失公告 ID {lost_id}"}), 404
+  if not cursor.execute("SELECT 1 FROM sightings WHERE id = ?", (sighting_id,)).fetchone():
+    conn.close()
+    return jsonify({"error": f"找不到通報 ID {sighting_id}"}), 404
+
+  # INSERT OR IGNORE：重複按也只會有一筆紀錄
+  cursor.execute(
+      "INSERT OR IGNORE INTO sighting_rejections (lost_id, sighting_id) VALUES (?, ?)",
+      (lost_id, sighting_id),
+  )
+  cursor.execute(
+      "UPDATE sightings SET status = '飼主已排除' WHERE id = ? AND status != '飼主已確認'",
+      (sighting_id,),
+  )
+  conn.commit()
+  conn.close()
+
+  return jsonify({
+      "message": "已記錄，這筆通報不會再出現在你的通知欄",
+      "lost_id": lost_id,
+      "sighting_id": sighting_id,
+      "sighting_status": "飼主已排除",
+  }), 200
 
 #=========================================
 

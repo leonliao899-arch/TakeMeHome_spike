@@ -41,6 +41,7 @@
       border-radius: 25px;
       box-shadow: 0 4px 12px rgba(0,0,0,0.2);
       cursor: pointer;
+      white-space: nowrap;   /* 兩顆按鈕並排時不要折行 */
     }
     .loc-btn:active {
       transform: scale(0.96);
@@ -53,6 +54,28 @@
       box-shadow: 0 2px 8px rgba(0,0,0,0.15);
       display: none;
     }
+
+    /* 我的案件：按鈕與下拉清單 */
+    .my-cases-btn { background-color: #ef4444; }
+    .my-cases-panel {
+      display: none;
+      background: #fff;
+      border-radius: 10px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+      padding: 6px;
+      min-width: 220px;
+    }
+    .my-cases-panel.show { display: block; }
+    .my-cases-panel a {
+      display: block;
+      padding: 10px 12px;
+      border-radius: 6px;
+      color: #1e293b;
+      text-decoration: none;
+      font-size: 14px;
+    }
+    .my-cases-panel a:hover { background: #f1f5f9; }
+    .my-cases-panel .code { color: #64748b; font-size: 12px; margin-left: 6px; }
 
     /* 右下角圖例面板（往上移，讓出底部行動按鈕的位置） */
     .map-legend {
@@ -86,6 +109,33 @@
       box-shadow: 0 0 2px rgba(0,0,0,0.5);
     }
 
+    .dot-rejected {
+      background-color: #9ca3af; /* 灰色：飼主看過、已排除的通報 */
+      border: 2px solid white;
+      box-shadow: 0 0 2px rgba(0,0,0,0.5);
+    }
+
+    /* 紅色圖釘彈出視窗：公告照片＋「我看過這隻」按鈕 */
+    .popup-photo {
+      width: 100%;
+      max-height: 140px;
+      object-fit: cover;
+      border-radius: 6px;
+      margin: 6px 0;
+      display: block;
+    }
+    .popup-btn {
+      display: block;
+      margin-top: 8px;
+      padding: 8px 0;
+      text-align: center;
+      background: #2563eb;
+      color: #fff !important;
+      border-radius: 6px;
+      font-weight: bold;
+      text-decoration: none;
+    }
+
     /* 底部行動按鈕：飼主發公告／協尋者通報，兩個入口 */
     .action-bar {
       position: absolute;
@@ -115,7 +165,12 @@
 
   <!-- 頂部定位按鈕 -->
   <div class="controls">
-    <button class="loc-btn" onclick="getUserLocation()">📍 使用目前位置</button>
+    <div style="display: flex; gap: 8px;">
+      <button class="loc-btn" onclick="getUserLocation()">📍 使用目前位置</button>
+      <!-- 這台裝置發過公告才會出現 -->
+      <button class="loc-btn my-cases-btn" id="myCasesBtn" onclick="toggleMyCases()" style="display: none;">📂 我的案件</button>
+    </div>
+    <div class="my-cases-panel" id="myCasesPanel"></div>
     <div class="status-box" id="statusBox"></div>
   </div>
 
@@ -126,12 +181,13 @@
   <div class="map-legend">
     <div><span class="legend-dot dot-lost"></span><strong>🔴 走失公告</strong></div>
     <div><span class="legend-dot dot-sighting"></span><strong>🔵 目擊通報</strong></div>
+    <div><span class="legend-dot dot-rejected"></span><strong>飼主已排除</strong></div>
   </div>
 
   <!-- 底部行動按鈕 -->
   <div class="action-bar">
-    <a href="/lost-form" class="btn-lost">📢 我的寵物走失了</a>
-    <a href="/sighting-form" class="btn-sighting">👀 我看到動物</a>
+    <a href="/lost-form" class="btn-lost">📢 發布走失公告</a>
+    <a href="/sighting-form" class="btn-sighting">👀 我看到了</a>
   </div>
 
   <!-- 引入 Leaflet JS -->
@@ -175,9 +231,15 @@
           // 判斷是否有寵物名字，有則顯示
           const nameText = item.pet_name ? `<strong>名字：</strong>${esc(item.pet_name)}<br>` : '';
 
+          // 公告照片（有才顯示），讓協尋者知道該注意哪隻
+          const photoHtml = item.photo_1
+            ? `<img class="popup-photo" src="${esc(item.photo_1)}" alt="走失寵物照片">`
+            : '';
+
           const popupContent = `
-            <div style="min-width: 150px; font-size: 13px;">
+            <div style="min-width: 170px; font-size: 13px;">
               <strong style="color: #ef4444;">【🔴 走失公告】</strong><br>
+              ${photoHtml}
               ${nameText}
               <strong>案件：</strong>${esc(item.case_code)}<br>
               <strong>物種：</strong>${esc(item.species)} (${esc(item.size)}型 / ${esc(item.fur_length)})<br>
@@ -185,25 +247,34 @@
               <strong>配件：</strong>${esc(item.accessory)} (${esc(item.accessory_color || '無')})<br>
               <strong>記號：</strong>${esc(item.special_mark)}<br>
               <strong>狀態：</strong>${esc(item.status)}
+              <a class="popup-btn" href="/sighting-form?lost_id=${Number(item.id)}">👀 我看過這隻</a>
             </div>
           `;
           redMarker.bindPopup(popupContent);
         });
 
         // (2) 繪製藍色圖釘：目擊通報 (sightings)
+        //     顏色依通報狀態：飼主已排除＝灰、飼主已確認＝深藍、其他＝藍
+        const SIGHTING_COLOR = { '飼主已排除': '#9ca3af', '飼主已確認': '#1e3a8a' };
         data.sightings.forEach(item => {
           const blueMarker = L.circleMarker([item.lat, item.lng], {
             radius: 9,
-            fillColor: '#3b82f6',
+            fillColor: SIGHTING_COLOR[item.status] || '#3b82f6',
             color: '#ffffff',
             weight: 2,
             opacity: 1,
             fillOpacity: 0.95
           }).addTo(map);
 
+          // 目擊照片（有才顯示），讓飼主在地圖上就能先看一眼
+          const sightingPhoto = item.photo_1
+            ? `<img class="popup-photo" src="${esc(item.photo_1)}" alt="目擊照片">`
+            : '';
+
           const popupContent = `
-            <div style="min-width: 150px; font-size: 13px;">
+            <div style="min-width: 170px; font-size: 13px;">
               <strong style="color: #3b82f6;">【🔵 目擊通報】</strong><br>
+              ${sightingPhoto}
               <strong>物種：</strong>${esc(item.species)} (${esc(item.size)}型)<br>
               <strong>毛色：</strong>${esc(item.fur_color)}<br>
               <strong>描述：</strong>${esc(item.description || '無描述')}<br>
@@ -215,6 +286,39 @@
         });
       })
       .catch(err => console.error("撈取雙色圖釘資料失敗：", err));
+
+    // 3.5 我的案件：讀取發布公告時存在這台裝置的案件清單（localStorage）
+    function loadMyCases() {
+      try {
+        return JSON.parse(localStorage.getItem('myCases') || '[]');
+      } catch (e) {
+        return [];   // 無痕模式等無法存取時，當作沒有案件
+      }
+    }
+
+    function renderMyCases() {
+      const cases = loadMyCases();
+      if (cases.length === 0) return;
+      document.getElementById('myCasesBtn').style.display = 'inline-block';
+      const panel = document.getElementById('myCasesPanel');
+      panel.innerHTML = '';
+      cases.forEach(c => {
+        const a = document.createElement('a');
+        a.href = `/case/${Number(c.id)}`;
+        a.textContent = `🐾 ${c.pet_name || '未命名'}`;   // textContent 避免 XSS
+        const code = document.createElement('span');
+        code.className = 'code';
+        code.textContent = c.case_code;
+        a.appendChild(code);
+        panel.appendChild(a);
+      });
+    }
+
+    function toggleMyCases() {
+      document.getElementById('myCasesPanel').classList.toggle('show');
+    }
+
+    renderMyCases();
 
     // 4. 使用者手機定位功能
     let userMarker = null;

@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>我的案件 - TakeMeHome</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0 auto; padding: 16px 16px 40px; max-width: 500px;
+      line-height: 1.5; color: #333; background: #fff;
+    }
+    .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .top-bar a { color: #2563eb; text-decoration: none; font-weight: bold; font-size: 14px; }
+    .top-bar button {
+      border: 1px solid #cbd5e1; background: #fff; border-radius: 6px; padding: 6px 10px;
+      font-size: 14px; color: #475569; cursor: pointer;
+    }
+
+    /* 公告摘要卡 */
+    .pet-card {
+      display: flex; gap: 12px; align-items: center; padding: 12px;
+      border: 1px solid #fecaca; background: #fef2f2; border-radius: 10px;
+    }
+    .pet-photo {
+      width: 72px; height: 72px; border-radius: 8px; object-fit: cover; flex-shrink: 0;
+      background: #fee2e2; display: flex; align-items: center; justify-content: center; font-size: 30px;
+    }
+    .pet-name { font-size: 19px; font-weight: bold; }
+    .pet-meta { font-size: 13px; color: #64748b; }
+    .status-chip {
+      display: inline-block; font-size: 12px; font-weight: bold; padding: 1px 8px;
+      border-radius: 10px; margin-left: 6px; vertical-align: middle;
+    }
+    .chip-searching { background: #fee2e2; color: #b91c1c; }
+    .chip-found { background: #dcfce7; color: #166534; }
+    .chip-closed { background: #e2e8f0; color: #475569; }
+
+    .hint {
+      font-size: 13px; color: #475569; background: #f1f5f9; border-radius: 6px;
+      padding: 8px 10px; margin: 12px 0;
+    }
+    .found-banner {
+      text-align: center; background: #dcfce7; color: #166534; border-radius: 10px;
+      padding: 16px; margin: 12px 0; font-weight: bold;
+    }
+    .found-banner .big { font-size: 40px; }
+
+    h3 { font-size: 16px; color: #1e3a8a; margin: 18px 0 10px; }
+
+    /* 通知卡片：整張可點，進入詳情頁 */
+    .notice {
+      display: flex; gap: 12px; padding: 12px; border: 1px solid #e2e8f0; border-radius: 10px;
+      margin-bottom: 10px; text-decoration: none; color: inherit;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    }
+    .notice.picked { border: 2px solid #f59e0b; background: #fffbeb; }
+    .notice-photo {
+      width: 80px; height: 80px; border-radius: 8px; object-fit: cover; flex-shrink: 0;
+      background: #f1f5f9; display: flex; align-items: center; justify-content: center; font-size: 28px;
+    }
+    .notice-body { flex: 1; min-width: 0; }
+    .level { font-weight: bold; font-size: 15px; }
+    .picked-tag {
+      display: inline-block; font-size: 12px; font-weight: bold; color: #92400e;
+      background: #fde68a; border-radius: 10px; padding: 1px 8px; margin-bottom: 2px;
+    }
+    .notice-meta { font-size: 13px; color: #475569; }
+    .notice-desc {
+      font-size: 13px; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .notice-go { align-self: center; color: #94a3b8; font-size: 20px; }
+
+    .empty {
+      text-align: center; color: #64748b; font-size: 14px; padding: 24px 12px;
+      border: 1px dashed #cbd5e1; border-radius: 10px;
+    }
+    .empty .big { font-size: 36px; }
+    .error { color: #dc2626; text-align: center; padding: 30px 0; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="top-bar">
+    <a href="/">⬅ 回到地圖</a>
+    <button type="button" onclick="loadAll()">🔄 重新整理</button>
+  </div>
+
+  <div id="content"><div style="text-align:center; padding:40px 0; color:#64748b;">⏳ 載入中…</div></div>
+
+  <script>
+    const LOST_ID = {{ lost_id }};   // 由 Flask 帶入，只會是整數
+
+    // 「多久以前」：sighting_time 是協尋者手機的當地時間，用瀏覽器當地時間解析
+    function timeAgo(text) {
+      const t = new Date(String(text).replace(' ', 'T'));
+      if (isNaN(t)) return text || '';
+      const mins = Math.round((Date.now() - t.getTime()) / 60000);
+      if (mins < 1) return '剛剛';
+      if (mins < 60) return `${mins} 分鐘前`;
+      const hours = Math.round(mins / 60);
+      if (hours < 24) return `${hours} 小時前`;
+      return `${Math.round(hours / 24)} 天前`;
+    }
+
+    function formatKm(km) {
+      return km < 1 ? `${Math.round(km * 1000)} 公尺` : `${km} 公里`;
+    }
+
+    // 建立元素的小工具：文字一律用 textContent，避免使用者輸入被當成 HTML
+    function el(tag, className, text) {
+      const e = document.createElement(tag);
+      if (className) e.className = className;
+      if (text !== undefined) e.textContent = text;
+      return e;
+    }
+
+    function photoOrPlaceholder(src, className, emoji) {
+      if (src) {
+        const img = el('img', className);
+        img.src = src;
+        img.alt = '照片';
+        return img;
+      }
+      return el('div', className, emoji);
+    }
+
+    async function loadAll() {
+      const box = document.getElementById('content');
+      try {
+        const [lostRes, notiRes] = await Promise.all([
+          fetch(`/api/lost_reports/${LOST_ID}`),
+          fetch(`/api/lost_reports/${LOST_ID}/notifications`)
+        ]);
+        if (lostRes.status === 404) {
+          box.innerHTML = '<div class="error">找不到這則走失公告，請確認連結是否正確。</div>';
+          return;
+        }
+        if (!lostRes.ok || !notiRes.ok) throw new Error('server');
+        render(await lostRes.json(), await notiRes.json());
+      } catch (err) {
+        box.innerHTML = '<div class="error">❌ 載入失敗，請檢查網路後按「重新整理」。</div>';
+      }
+    }
+
+    function render(lost, data) {
+      const box = document.getElementById('content');
+      box.innerHTML = '';
+
+      // 1. 公告摘要
+      const card = el('div', 'pet-card');
+      card.appendChild(photoOrPlaceholder(lost.photo_1, 'pet-photo', '🐾'));
+      const info = el('div');
+      const name = el('div', 'pet-name', lost.pet_name || '未命名');
+      const chipClass = lost.status === '尋找中' ? 'chip-searching'
+                      : lost.status === '已尋回' ? 'chip-found' : 'chip-closed';
+      name.appendChild(el('span', 'status-chip ' + chipClass, lost.status));
+      info.appendChild(name);
+      info.appendChild(el('div', 'pet-meta', `案件編號 ${lost.case_code}`));
+      info.appendChild(el('div', 'pet-meta',
+        `${lost.species}・${lost.size}型・${lost.fur_color}・走失 ${lost.lost_time}`));
+      card.appendChild(info);
+      box.appendChild(card);
+
+      if (lost.status === '已尋回') {
+        const banner = el('div', 'found-banner');
+        banner.appendChild(el('div', 'big', '🎉'));
+        banner.appendChild(el('div', '', `${lost.pet_name || '寶貝'}已經回家了！系統已停止為這則公告比對新的通報。`));
+        box.appendChild(banner);
+        return;
+      }
+
+      box.appendChild(el('div', 'hint',
+        '🔖 請把這一頁加入書籤。有人通報外觀相近的動物時，會出現在下方清單；點進去可以看照片、比對特徵。'));
+
+      // 2. 通知清單
+      box.appendChild(el('h3', '', `🔔 可能是你的寶貝（${data.notification_count} 筆）`));
+
+      if (data.notification_count === 0) {
+        const empty = el('div', 'empty');
+        empty.appendChild(el('div', 'big', '🔍'));
+        empty.appendChild(el('div', '', '目前還沒有外觀相近的目擊通報。'));
+        empty.appendChild(el('div', '', '有人通報後會出現在這裡；你也可以回地圖看看附近所有的藍色目擊點。'));
+        box.appendChild(empty);
+        return;
+      }
+
+      data.notifications.forEach(n => {
+        const a = el('a', 'notice' + (n.manually_confirmed ? ' picked' : ''));
+        a.href = `/case/${LOST_ID}/sighting/${Number(n.sighting_id)}`;
+        a.appendChild(photoOrPlaceholder(n.photo_1, 'notice-photo', '📷'));
+
+        const body = el('div', 'notice-body');
+        if (n.manually_confirmed) body.appendChild(el('div', 'picked-tag', '⭐ 協尋者指認是你的寶貝'));
+        body.appendChild(el('div', 'level', `${n.match_level}（外觀 ${n.appearance_score} 分）`));
+        body.appendChild(el('div', 'notice-meta',
+          `📏 ${formatKm(n.distance_km)}・🕒 ${timeAgo(n.sighting_time)}`));
+        if (n.description) body.appendChild(el('div', 'notice-desc', `📍 ${n.description}`));
+        a.appendChild(body);
+        a.appendChild(el('div', 'notice-go', '›'));
+        box.appendChild(a);
+      });
+    }
+
+    loadAll();
+  </script>
+</body>
+</html>
