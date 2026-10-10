@@ -26,8 +26,11 @@ app = Flask(__name__)
 app.register_blueprint(vision_bp)
 DB_NAME = "database.db"
 
-# 單次請求上限 10MB（規劃文件「十三、上傳原圖限制」）；超過時 Flask 會自動回 413
-app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
+# 單次請求上限 32MB；超過時 Flask 會自動回 413
+# 不設 10MB 的原因：飼主表單目前直接上傳手機原圖，AI 辨識一次最多送 3 張原圖，
+# iPhone 照片轉成 JPEG 後單張就可能超過 5MB，設太小會讓上傳在中途被切斷。
+# 協尋者表單已在前端壓縮到約 200KB，不受影響；單張 10MB 的限制由 vision.py 檢查。
+app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024
 
 UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "static", "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -66,6 +69,18 @@ def get_db_connection():
   conn = sqlite3.connect(DB_NAME)
   conn.row_factory = sqlite3.Row
   return conn
+
+
+def ensure_columns(cursor, table, columns):
+  """檢查資料表是否有指定欄位，缺少的就用 ALTER TABLE 補上。
+
+  PRAGMA table_info 會列出資料表目前所有欄位，第 2 個值（索引 1）是欄位名稱。
+  """
+  cursor.execute(f"PRAGMA table_info({table})")
+  existing = {row[1] for row in cursor.fetchall()}
+  for name, col_type in columns.items():
+    if name not in existing:
+      cursor.execute(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}")
 
 
 def init_db():
@@ -129,6 +144,27 @@ def init_db():
         )
     """)
 
+  # 2.5 補上舊資料庫缺少的欄位
+  #     CREATE TABLE IF NOT EXISTS 只會在「表不存在」時建表；如果表是舊版程式建的，
+  #     之後新增的欄位（例如 pet_name）不會自動補上，查詢時就會出現 no such column。
+  #     所以逐一檢查欄位，缺少的用 ALTER TABLE 補上（補上的欄位舊資料會是空值）。
+  ensure_columns(cursor, "lost_reports", {
+      "pet_name": "TEXT",
+      "notes": "TEXT",
+      "photo_2": "TEXT",
+      "photo_3": "TEXT",
+      "privacy_radius": "INTEGER DEFAULT 50",
+  })
+  ensure_columns(cursor, "sightings", {
+      "photo_2": "TEXT",
+      "photo_3": "TEXT",
+      "description": "TEXT",
+      "matched_lost_id": "INTEGER",
+      "score": "INTEGER DEFAULT 0",
+      "tracking_token": "TEXT",
+      "contact_email": "TEXT",
+  })
+
   # 3. 測試種子資料（阿凱的小黑）；照片欄位留空，不引用不存在的檔案
   cursor.execute("SELECT COUNT(*) FROM lost_reports")
   if cursor.fetchone()[0] == 0:
@@ -190,7 +226,7 @@ init_db()
 @app.errorhandler(413)
 def file_too_large(_err):
   """上傳超過 MAX_CONTENT_LENGTH 時回傳前端看得懂的 JSON，而不是 HTML 錯誤頁"""
-  return jsonify({"error": "照片太大（單張上限 10MB）"}), 413
+  return jsonify({"error": "照片太大，請改選較小的照片"}), 413
 
 
 # ==========================================
