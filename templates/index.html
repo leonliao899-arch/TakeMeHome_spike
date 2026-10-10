@@ -54,10 +54,10 @@
       display: none;
     }
 
-    /* 右下角圖例面板 */
+    /* 右下角圖例面板（往上移，讓出底部行動按鈕的位置） */
     .map-legend {
       position: absolute;
-      bottom: 25px;
+      bottom: 84px;
       right: 15px;
       z-index: 1000;
       background: rgba(255, 255, 255, 0.95);
@@ -85,6 +85,30 @@
       border: 2px solid white;
       box-shadow: 0 0 2px rgba(0,0,0,0.5);
     }
+
+    /* 底部行動按鈕：飼主發公告／協尋者通報，兩個入口 */
+    .action-bar {
+      position: absolute;
+      left: 16px;
+      right: 16px;
+      bottom: 20px;
+      z-index: 1000;
+      display: flex;
+      gap: 10px;
+    }
+    .action-bar a {
+      flex: 1;
+      text-align: center;
+      padding: 13px 0;
+      border-radius: 25px;
+      font-size: 15px;
+      font-weight: bold;
+      text-decoration: none;
+      color: white;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+    }
+    .btn-lost { background: #ef4444; }
+    .btn-sighting { background: #2563eb; }
   </style>
 </head>
 <body>
@@ -104,10 +128,26 @@
     <div><span class="legend-dot dot-sighting"></span><strong>🔵 目擊通報</strong></div>
   </div>
 
+  <!-- 底部行動按鈕 -->
+  <div class="action-bar">
+    <a href="/lost-form" class="btn-lost">📢 我的寵物走失了</a>
+    <a href="/sighting-form" class="btn-sighting">👀 我看到動物</a>
+  </div>
+
   <!-- 引入 Leaflet JS -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
   <script>
+    // 0. 把使用者輸入的文字轉成純文字再放進彈窗，避免有人在描述欄位輸入 HTML/程式碼（XSS）
+    function esc(value) {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
     // 1. 初始化地圖，中心點預設在大安區 [25.026, 121.543]，縮放級別 14
     const map = L.map('map').setView([25.026, 121.543], 14);
 
@@ -133,18 +173,18 @@
           }).addTo(map);
 
           // 判斷是否有寵物名字，有則顯示
-          const nameText = item.pet_name ? `<strong>名字：</strong>${item.pet_name}<br>` : '';
+          const nameText = item.pet_name ? `<strong>名字：</strong>${esc(item.pet_name)}<br>` : '';
 
           const popupContent = `
             <div style="min-width: 150px; font-size: 13px;">
               <strong style="color: #ef4444;">【🔴 走失公告】</strong><br>
               ${nameText}
-              <strong>案件：</strong>${item.case_code}<br>
-              <strong>物種：</strong>${item.species} (${item.size}型 / ${item.fur_length})<br>
-              <strong>毛色：</strong>${item.fur_color}<br>
-              <strong>配件：</strong>${item.accessory} (${item.accessory_color || '無'})<br>
-              <strong>記號：</strong>${item.special_mark}<br>
-              <strong>狀態：</strong>${item.status}
+              <strong>案件：</strong>${esc(item.case_code)}<br>
+              <strong>物種：</strong>${esc(item.species)} (${esc(item.size)}型 / ${esc(item.fur_length)})<br>
+              <strong>毛色：</strong>${esc(item.fur_color)}<br>
+              <strong>配件：</strong>${esc(item.accessory)} (${esc(item.accessory_color || '無')})<br>
+              <strong>記號：</strong>${esc(item.special_mark)}<br>
+              <strong>狀態：</strong>${esc(item.status)}
             </div>
           `;
           redMarker.bindPopup(popupContent);
@@ -164,11 +204,11 @@
           const popupContent = `
             <div style="min-width: 150px; font-size: 13px;">
               <strong style="color: #3b82f6;">【🔵 目擊通報】</strong><br>
-              <strong>物種：</strong>${item.species} (${item.size}型)<br>
-              <strong>毛色：</strong>${item.fur_color}<br>
-              <strong>描述：</strong>${item.description || '無描述'}<br>
-              <strong>時間：</strong>${item.sighting_time}<br>
-              <strong>狀態：</strong>${item.status}
+              <strong>物種：</strong>${esc(item.species)} (${esc(item.size)}型)<br>
+              <strong>毛色：</strong>${esc(item.fur_color)}<br>
+              <strong>描述：</strong>${esc(item.description || '無描述')}<br>
+              <strong>時間：</strong>${esc(item.sighting_time)}<br>
+              <strong>狀態：</strong>${esc(item.status)}
             </div>
           `;
           blueMarker.bindPopup(popupContent);

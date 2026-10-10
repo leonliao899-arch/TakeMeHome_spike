@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>通報追蹤 - TakeMeHome</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0 auto; padding: 20px 16px 40px; max-width: 500px;
+      line-height: 1.6; color: #333; background: #fff;
+    }
+    h2 { margin: 0 0 16px; font-size: 20px; }
+    .status-card {
+      border-radius: 12px; padding: 18px; text-align: center; margin-bottom: 16px;
+    }
+    .status-card .icon { font-size: 44px; }
+    .status-card .label { font-size: 20px; font-weight: bold; margin-top: 4px; }
+    .status-card .desc { font-size: 14px; margin-top: 6px; }
+    .s-wait { background: #eff6ff; color: #1e40af; }
+    .s-notified { background: #fef9c3; color: #854d0e; }
+    .s-found { background: #dcfce7; color: #166534; }
+    .s-rejected { background: #f1f5f9; color: #475569; }
+    .info {
+      font-size: 14px; background: #f8fafc; border: 1px solid #e2e8f0;
+      border-radius: 8px; padding: 12px 14px;
+    }
+    .info div { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; }
+    .info span:first-child { color: #64748b; flex-shrink: 0; }
+    .info span:last-child { font-weight: bold; text-align: right; word-break: break-all; }
+    .photo { width: 100%; max-height: 260px; object-fit: cover; border-radius: 8px; margin-bottom: 12px; }
+    a.btn {
+      display: block; margin-top: 18px; padding: 11px; border-radius: 6px; text-align: center;
+      text-decoration: none; font-weight: bold; background: #2563eb; color: #fff;
+    }
+  </style>
+</head>
+<body>
+  <h2>🔖 我的目擊通報</h2>
+
+  {% if not sighting %}
+    <div class="status-card s-rejected">
+      <div class="icon">🤔</div>
+      <div class="label">找不到這筆通報</div>
+      <div class="desc">連結可能不完整，請確認是否完整複製了追蹤連結。</div>
+    </div>
+  {% else %}
+    {# 依通報狀態顯示不同的卡片；Jinja 會自動跳脫文字，使用者輸入不會被當成 HTML 執行 #}
+    {% set st = sighting.status %}
+    {% if st == '飼主已確認' %}
+      <div class="status-card s-found">
+        <div class="icon">🎉</div>
+        <div class="label">飼主已確認，就是這隻寶貝！</div>
+        <div class="desc">謝謝你的通報，牠已經平安回家了。</div>
+      </div>
+    {% elif st == '飼主已排除' %}
+      <div class="status-card s-rejected">
+        <div class="icon">🙏</div>
+        <div class="label">飼主看過了，不是他的寵物</div>
+        <div class="desc">你的通報仍會留在地圖上，也許能幫到其他飼主。</div>
+      </div>
+    {% elif st == '已通知飼主' %}
+      <div class="status-card s-notified">
+        <div class="icon">📨</div>
+        <div class="label">已通知飼主，等待確認中</div>
+        <div class="desc">你指認了{% if sighting.pet_name %}「{{ sighting.pet_name }}」{% endif %}，飼主確認後這裡會更新。</div>
+      </div>
+    {% else %}
+      <div class="status-card s-wait">
+        <div class="icon">⏳</div>
+        <div class="label">待確認</div>
+        <div class="desc">通報已顯示在地圖上，若特徵符合，系統會通知飼主。</div>
+      </div>
+    {% endif %}
+
+    {% if sighting.photo_1 %}
+      <img class="photo" src="{{ sighting.photo_1 }}" alt="目擊照片">
+    {% endif %}
+
+    <div class="info">
+      <div><span>目擊時間</span><span>{{ sighting.sighting_time }}</span></div>
+      <div><span>物種／體型</span><span>{{ sighting.species }}（{{ sighting.size }}型）</span></div>
+      <div><span>毛色</span><span>{{ sighting.fur_color }}</span></div>
+      <div><span>目擊描述</span><span>{{ sighting.description or '無' }}</span></div>
+      {% if sighting.case_code %}
+        <div><span>關聯公告</span><span>{{ sighting.pet_name or '' }} {{ sighting.case_code }}</span></div>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  <a class="btn" href="/">🗺️ 回到地圖</a>
+</body>
+</html>

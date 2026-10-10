@@ -24,9 +24,9 @@
     .btn-group { display: flex; justify-content: space-between; margin-top: 24px; }
     button { padding: 10px 18px; font-size: 15px; cursor: pointer; border-radius: 4px; border: 1px solid #aaa; background: #f0f0f0; }
     button.btn-primary { background: #2563eb; color: white; border: none; font-weight: bold; }
+    button:disabled { opacity: 0.6; cursor: wait; }
     .tag { font-size: 12px; color: #666; margin-top: 3px; }
-    
-    /* 縮圖預覽 */
+
     .img-preview {
       display: none;
       max-width: 120px;
@@ -37,7 +37,6 @@
       object-fit: cover;
     }
 
-    /* 錯誤警示紅框與紅字 */
     .input-error {
       border: 2px solid #dc2626 !important;
       background-color: #fef2f2;
@@ -49,7 +48,56 @@
       display: none;
     }
 
-    /* ===== 自製確認摘要 Modal 彈窗樣式 (保證真機排版不跑版) ===== */
+    /* ===== AI 預填相關樣式 ===== */
+    .ai-hint {
+      font-size: 13px;
+      color: #475569;
+      background: #f1f5f9;
+      border-radius: 6px;
+      padding: 8px 10px;
+      margin-bottom: 14px;
+    }
+    .ai-status {
+      margin-top: 12px;
+      font-size: 14px;
+      font-weight: bold;
+      color: #2563eb;
+      text-align: center;
+      min-height: 20px;
+    }
+    .ai-banner {
+      display: none;
+      font-size: 13px;
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin-bottom: 14px;
+      line-height: 1.6;
+      white-space: pre-line;
+    }
+    .ai-banner.ok { display: block; background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
+    .ai-banner.warn { display: block; background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
+    .ai-badge {
+      display: none;
+      font-size: 11px;
+      font-weight: normal;
+      background: #dbeafe;
+      color: #1d4ed8;
+      border-radius: 10px;
+      padding: 1px 8px;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+    .ai-badge.show { display: inline-block; }
+    select.ai-filled { border: 2px solid #93c5fd; background-color: #f8fbff; }
+    .ai-evidence {
+      font-size: 12px;
+      color: #64748b;
+      margin-top: 3px;
+      display: none;
+    }
+    .ai-evidence.show { display: block; }
+
+    /* 自製確認摘要 Modal 彈窗樣式 */
     .modal-overlay {
       display: none;
       position: fixed;
@@ -134,9 +182,16 @@
   <h2>📢 發布走失公告 (Step <span id="step-indicator">1</span>/4)</h2>
 
   <form id="lostForm" onsubmit="return false;">
-    <!-- ===== Step 1: 基本硬性條件 ===== -->
+    <!-- ===== Step 1: 基本條件（加入寵物名字） ===== -->
     <div class="step-section active" id="step-1">
       <h3>第一步：基本條件</h3>
+
+      <div class="form-group">
+        <label>寵物名字<span class="required">*</span>：</label>
+        <input type="text" id="pet_name" placeholder="如：小黑、咪咪、Lucky">
+        <div id="pet-name-error" class="error-text">請填寫寵物的名字！</div>
+      </div>
+
       <div class="form-group">
         <label>物種 (硬性條件)<span class="required">*</span>：</label>
         <select id="species">
@@ -175,11 +230,52 @@
       </div>
     </div>
 
-    <!-- ===== Step 2: 外觀特徵 ===== -->
+    <!-- ===== Step 2: 寵物照片（移到外觀特徵之前，讓 AI 先看照片再預填） ===== -->
     <div class="step-section" id="step-2">
-      <h3>第二步：外觀特徵</h3>
+      <h3>第二步：寵物照片 (1 必填 + 2 選填)</h3>
+
+      <div class="ai-hint">
+        🤖 上傳照片後按「下一步」，AI 會先看照片，幫你預填下一頁的毛色、配件與特殊記號。
+        特寫照越清楚，預填越準。
+      </div>
+
       <div class="form-group">
-        <label>配件<span class="required">*</span>：</label>
+        <label>第 1 張：全身照<span class="required">*必填</span></label>
+        <input type="file" id="photo_1" accept="image/*" onchange="previewImage(this, 'preview_1')">
+        <div class="tag">標籤：全身 (供比對體型與主要毛色)</div>
+        <div id="photo1-error" class="error-text">請務必上傳第 1 張全身照！</div>
+        <img id="preview_1" class="img-preview" alt="預覽圖1">
+      </div>
+
+      <div class="form-group">
+        <label>第 2 張：特徵照 (選填)</label>
+        <input type="file" id="photo_2" accept="image/*" onchange="previewImage(this, 'preview_2')">
+        <div class="tag">標籤：特殊記號特寫 (如白襪子、色塊)</div>
+        <img id="preview_2" class="img-preview" alt="預覽圖2">
+      </div>
+
+      <div class="form-group">
+        <label>第 3 張：特徵照 (選填)</label>
+        <input type="file" id="photo_3" accept="image/*" onchange="previewImage(this, 'preview_3')">
+        <div class="tag">標籤：配件特寫 (如項圈、名牌)</div>
+        <img id="preview_3" class="img-preview" alt="預覽圖3">
+      </div>
+
+      <div class="btn-group">
+        <button type="button" onclick="prevStep(1)">⬅ 上一步</button>
+        <button type="button" class="btn-primary" id="photo-next-btn" onclick="validatePhotosAndAnalyze()">下一步 ➔</button>
+      </div>
+      <div id="ai-status" class="ai-status"></div>
+    </div>
+
+    <!-- ===== Step 3: 外觀特徵（AI 預填，使用者確認／修改） ===== -->
+    <div class="step-section" id="step-3">
+      <h3>第三步：外觀特徵</h3>
+
+      <div id="ai-banner" class="ai-banner"></div>
+
+      <div class="form-group">
+        <label>配件<span class="required">*</span>：<span class="ai-badge" id="ai-badge-accessory">🤖 AI 預填</span></label>
         <select id="accessory" onchange="toggleAccessoryColor()">
           <option value="">-- 請選擇是否有配件 --</option>
           <option value="沒有">沒有</option>
@@ -189,11 +285,12 @@
           <option value="名牌">名牌</option>
           <option value="其他">其他</option>
         </select>
+        <div class="ai-evidence" id="ai-ev-accessory"></div>
         <div id="accessory-error" class="error-text">請務必選擇配件選項！</div>
       </div>
 
       <div class="form-group" id="accessory-color-group" style="display: none;">
-        <label>配件顏色<span class="required">*</span>：</label>
+        <label>配件顏色<span class="required">*</span>：<span class="ai-badge" id="ai-badge-accessory_color">🤖 AI 預填</span></label>
         <select id="accessory_color">
           <option value="">-- 請選擇配件顏色 --</option>
           <option value="紅色">紅色</option>
@@ -203,11 +300,12 @@
           <option value="黑色">黑色</option>
           <option value="其他">其他</option>
         </select>
+        <div class="ai-evidence" id="ai-ev-accessory_color"></div>
         <div id="accessory-color-error" class="error-text">請務必選擇配件顏色！</div>
       </div>
 
       <div class="form-group">
-        <label>毛色色系 (分組降誤判)<span class="required">*</span>：</label>
+        <label>毛色色系 (分組降誤判)<span class="required">*</span>：<span class="ai-badge" id="ai-badge-fur_color">🤖 AI 預填</span></label>
         <select id="fur_color">
           <option value="">-- 請選擇毛色色系 --</option>
           <option value="黑/深棕">黑 / 深棕</option>
@@ -216,11 +314,12 @@
           <option value="虎斑/花紋">虎斑 / 花紋</option>
           <option value="三花/雙色">三花 / 雙色</option>
         </select>
+        <div class="ai-evidence" id="ai-ev-fur_color"></div>
         <div id="fur-color-error" class="error-text">請務必選擇毛色色系！</div>
       </div>
 
       <div class="form-group">
-        <label>特殊記號<span class="required">*</span>：</label>
+        <label>特殊記號<span class="required">*</span>：<span class="ai-badge" id="ai-badge-special_mark">🤖 AI 預填</span></label>
         <select id="special_mark">
           <option value="">-- 請選擇特殊記號 --</option>
           <option value="沒有">沒有</option>
@@ -232,47 +331,13 @@
           <option value="跛腳">跛腳</option>
           <option value="其他">其他</option>
         </select>
+        <div class="ai-evidence" id="ai-ev-special_mark"></div>
         <div id="special-mark-error" class="error-text">請務必選擇是否有特殊記號！</div>
       </div>
 
       <div class="form-group">
         <label>備註描述 (選填)：</label>
         <input type="text" id="notes" placeholder="如：親人、貪吃、立耳">
-      </div>
-
-      <div class="btn-group">
-        <button type="button" onclick="prevStep(1)">⬅ 上一步</button>
-        <button type="button" class="btn-primary" onclick="validateStep2AndNext()">下一步 ➔</button>
-      </div>
-    </div>
-
-    <!-- ===== Step 3: 照片上傳欄位（徹底移除死碼與多餘測試按鈕） ===== -->
-    <div class="step-section" id="step-3">
-      <h3>第三步：寵物照片 (1 必填 + 2 選填)</h3>
-      
-      <!-- 照片 1 -->
-      <div class="form-group">
-        <label>第 1 張：全身照<span class="required">*必填</span></label>
-        <input type="file" id="photo_1" accept="image/*" onchange="previewImage(this, 'preview_1')">
-        <div class="tag">標籤：全身 (供比對體型與主要毛色)</div>
-        <div id="photo1-error" class="error-text">請務必上傳第 1 張全身照！</div>
-        <img id="preview_1" class="img-preview" alt="預覽圖1">
-      </div>
-
-      <!-- 照片 2 -->
-      <div class="form-group">
-        <label>第 2 張：特徵照 (選填)</label>
-        <input type="file" id="photo_2" accept="image/*" onchange="previewImage(this, 'preview_2')">
-        <div class="tag">標籤：特殊記號特寫 (如白襪子、色塊)</div>
-        <img id="preview_2" class="img-preview" alt="預覽圖2">
-      </div>
-
-      <!-- 照片 3 -->
-      <div class="form-group">
-        <label>第 3 張：特徵照 (選填)</label>
-        <input type="file" id="photo_3" accept="image/*" onchange="previewImage(this, 'preview_3')">
-        <div class="tag">標籤：配件特寫 (如項圈、名牌)</div>
-        <img id="preview_3" class="img-preview" alt="預覽圖3">
       </div>
 
       <div class="btn-group">
@@ -284,7 +349,7 @@
     <!-- ===== Step 4: 時空定位與聯絡資訊 ===== -->
     <div class="step-section" id="step-4">
       <h3>第四步：時間地點與聯絡資訊</h3>
-      
+
       <div class="form-group">
         <label>走失地點座標<span class="required">*</span>：</label>
         <button type="button" onclick="getLocation()">📍 帶入目前位置</button>
@@ -321,13 +386,11 @@
     </div>
   </form>
 
-  <!-- ===== 跨裝置原生相容：自製確認彈出層 ===== -->
+  <!-- 自製確認摘要 Modal 彈窗 -->
   <div class="modal-overlay" id="summaryModal">
     <div class="modal-card">
       <h3>📋 請確認走失公告資訊</h3>
-      <div class="summary-list" id="summaryContent">
-        <!-- 由 JavaScript 動態注入結構化內容 -->
-      </div>
+      <div class="summary-list" id="summaryContent"></div>
       <p style="font-size: 12px; color: #64748b; margin: 10px 0 0; text-align: center;">
         * 為保護隱私，地圖公開座標將依設定自動偏移，Email 絕不公開。
       </p>
@@ -339,7 +402,6 @@
   </div>
 
   <script>
-    // 步驟切換
     function showStep(step) {
       document.querySelectorAll('.step-section').forEach(el => el.classList.remove('active'));
       document.getElementById('step-' + step).classList.add('active');
@@ -349,7 +411,6 @@
     function nextStep(step) { showStep(step); }
     function prevStep(step) { showStep(step); }
 
-    // 配件顏色連動防呆
     function toggleAccessoryColor() {
       const acc = document.getElementById('accessory').value;
       const colorGroup = document.getElementById('accessory-color-group');
@@ -358,14 +419,27 @@
         document.getElementById('accessory_color').value = '';
         document.getElementById('accessory-color-error').style.display = 'none';
         document.getElementById('accessory_color').classList.remove('input-error');
+        clearAiMark('accessory_color');
       } else {
         colorGroup.style.display = 'block';
       }
     }
 
-    // Step 1 必填校驗
+    // Step 1 必填校驗（含寵物名字）
     function validateStep1AndNext() {
       let isValid = true;
+      const petName = document.getElementById('pet_name');
+      const petNameErr = document.getElementById('pet-name-error');
+
+      if (!petName.value.trim()) {
+        petName.classList.add('input-error');
+        petNameErr.style.display = 'block';
+        isValid = false;
+      } else {
+        petName.classList.remove('input-error');
+        petNameErr.style.display = 'none';
+      }
+
       const fields = [
         { id: 'species', err: 'species-error' },
         { id: 'size', err: 'size-error' },
@@ -386,14 +460,146 @@
       });
 
       if (!isValid) {
-        alert("【必填提示】請完整選擇物種、體型與毛長！");
+        alert("【必填提示】請填寫寵物名字，並完整選擇物種、體型與毛長！");
         return;
       }
       nextStep(2);
     }
 
-    // Step 2 必填校驗
-    function validateStep2AndNext() {
+    // ==========================================
+    // 🤖 AI 照片辨識預填
+    // ==========================================
+    const AI_FIELDS = ['accessory', 'accessory_color', 'fur_color', 'special_mark'];
+    const userEdited = {};          // 使用者手動改過的欄位，重新辨識時不覆蓋
+    let lastAnalyzedKey = null;     // 照片沒換就不重複呼叫 AI（省錢）
+
+    // 使用者手動改欄位 → 拿掉 AI 標記，並記住「這格是使用者自己選的」
+    AI_FIELDS.forEach(id => {
+      document.getElementById(id).addEventListener('change', () => {
+        userEdited[id] = true;
+        clearAiMark(id);
+      });
+    });
+
+    function clearAiMark(id) {
+      document.getElementById(id).classList.remove('ai-filled');
+      document.getElementById('ai-badge-' + id).classList.remove('show');
+      const ev = document.getElementById('ai-ev-' + id);
+      ev.classList.remove('show');
+      ev.textContent = '';
+    }
+
+    function setAiValue(id, field) {
+      if (userEdited[id]) return;               // 尊重使用者的選擇
+      const el = document.getElementById(id);
+      if (!field || !field.value) {             // AI 看不清楚 → 清掉上一輪 AI 填的值，留給使用者選
+        if (el.classList.contains('ai-filled')) el.value = '';
+        clearAiMark(id);
+        return;
+      }
+      el.value = field.value;
+      el.classList.add('ai-filled');
+      el.classList.remove('input-error');
+      document.getElementById('ai-badge-' + id).classList.add('show');
+      const ev = document.getElementById('ai-ev-' + id);
+      if (field.evidence) {
+        ev.textContent = '🔍 AI 看到：' + field.evidence;   // 用 textContent 避免 XSS
+        ev.classList.add('show');
+      }
+    }
+
+    function showAiBanner(type, text) {
+      const banner = document.getElementById('ai-banner');
+      banner.className = 'ai-banner ' + type;
+      banner.textContent = text;
+    }
+
+    function photosKey() {
+      return ['photo_1', 'photo_2', 'photo_3'].map(id => {
+        const f = document.getElementById(id).files[0];
+        return f ? `${f.name}:${f.size}:${f.lastModified}` : '-';
+      }).join('|');
+    }
+
+    function applyAiResult(result) {
+      if (!result.is_pet) {
+        showAiBanner('warn', '⚠️ AI 在照片中沒有清楚看到狗或貓，未自動預填，請手動選擇。');
+        return;
+      }
+
+      // 先填配件（會連動顯示配件顏色欄），再填其他欄位
+      setAiValue('accessory', result.fields.accessory);
+      toggleAccessoryColor();
+      if (document.getElementById('accessory-color-group').style.display !== 'none') {
+        setAiValue('accessory_color', result.fields.accessory_color);
+      }
+      setAiValue('fur_color', result.fields.fur_color);
+      setAiValue('special_mark', result.fields.special_mark);
+
+      const filled = AI_FIELDS.filter(id => document.getElementById(id).classList.contains('ai-filled')).length;
+      let msg = filled > 0
+        ? `🤖 AI 已根據照片預填 ${filled} 個欄位（藍框）。AI 可能看錯，請逐一確認，不對的直接改選即可。`
+        : '🤖 AI 無法從照片確定這些特徵，請手動選擇。';
+
+      // 物種交叉檢查：照片看起來跟第一步選的不一樣時提醒
+      const chosenSpecies = document.getElementById('species').value;
+      if (result.species && chosenSpecies && result.species !== chosenSpecies) {
+        showAiBanner('warn', `⚠️ AI 判斷照片中是「${result.species}」，但第一步選的是「${chosenSpecies}」，請回到第一步確認物種。\n` + msg);
+        return;
+      }
+      showAiBanner('ok', msg);
+    }
+
+    async function validatePhotosAndAnalyze() {
+      const photo1 = document.getElementById('photo_1');
+      const errText = document.getElementById('photo1-error');
+
+      if (!photo1.files || photo1.files.length === 0) {
+        errText.style.display = 'block';
+        alert("【必填提示】請至少上傳第 1 張全身照！");
+        return;
+      }
+      errText.style.display = 'none';
+
+      const key = photosKey();
+      if (key === lastAnalyzedKey) {   // 照片沒變，直接下一步
+        nextStep(3);
+        return;
+      }
+
+      const btn = document.getElementById('photo-next-btn');
+      const status = document.getElementById('ai-status');
+      btn.disabled = true;
+      status.style.color = '#2563eb';
+      status.textContent = '🤖 AI 正在辨識照片中的毛色、配件與特殊記號…';
+
+      try {
+        const formData = new FormData();
+        ['photo_1', 'photo_2', 'photo_3'].forEach(id => {
+          const f = document.getElementById(id).files[0];
+          if (f) formData.append(id, f);
+        });
+
+        const res = await fetch('/api/analyze-photo', { method: 'POST', body: formData });
+        const data = await res.json();
+
+        if (res.ok) {
+          applyAiResult(data);
+          lastAnalyzedKey = key;
+        } else {
+          showAiBanner('warn', `⚠️ ${data.error || 'AI 辨識失敗'}，請手動選擇下列欄位。`);
+        }
+      } catch (err) {
+        showAiBanner('warn', '⚠️ AI 辨識連線失敗，請手動選擇下列欄位。');
+      } finally {
+        btn.disabled = false;
+        status.textContent = '';
+        nextStep(3);   // 不論 AI 成功與否都讓使用者繼續填
+      }
+    }
+
+    // Step 3（外觀特徵）必填校驗
+    function validateStep3AndNext() {
       let isValid = true;
       const acc = document.getElementById('accessory');
       const accErr = document.getElementById('accessory-error');
@@ -446,25 +652,9 @@
         alert("【必填提示】請確認外觀特徵（配件、顏色、毛色、記號）皆已選取！");
         return;
       }
-      nextStep(3);
-    }
-
-    // Step 3 必填校驗
-    function validateStep3AndNext() {
-      const photo1 = document.getElementById('photo_1');
-      const errText = document.getElementById('photo1-error');
-
-      if (!photo1.files || photo1.files.length === 0) {
-        errText.style.display = 'block';
-        alert("【必填提示】請至少上傳第 1 張全身照！");
-        return;
-      } else {
-        errText.style.display = 'none';
-      }
       nextStep(4);
     }
 
-    // GPS 座標帶入
     function getLocation() {
       const locErr = document.getElementById('location-error');
       if (!navigator.geolocation) {
@@ -484,7 +674,6 @@
       );
     }
 
-    // 純前端即時預覽
     function previewImage(inputElement, previewImgId) {
       const img = document.getElementById(previewImgId);
       const photo1Err = document.getElementById('photo1-error');
@@ -500,7 +689,6 @@
       }
     }
 
-    // 單圖上傳（由送出管線統一調用一次）
     async function uploadSinglePhoto(fileInputId) {
       const fileInput = document.getElementById(fileInputId);
       if (!fileInput.files || fileInput.files.length === 0) return '';
@@ -519,7 +707,6 @@
       return '';
     }
 
-    // 打開自製結構化摘要確認彈窗
     function openSummaryModal() {
       const photo1 = document.getElementById('photo_1').files[0];
       const lat = document.getElementById('lat').value;
@@ -533,7 +720,7 @@
 
       if (!photo1) {
         alert("【必填攔截】第 1 張全身照為必填項目！");
-        showStep(3);
+        showStep(2);
         return;
       }
       if (!lat || !lng) {
@@ -555,7 +742,7 @@
         return;
       }
 
-      // 提取所有填寫欄位
+      const petName = document.getElementById('pet_name').value.trim();
       const species = document.getElementById('species').value;
       const size = document.getElementById('size').value;
       const furLength = document.getElementById('fur_length').value;
@@ -574,8 +761,8 @@
       const formattedTime = lostTime.replace('T', ' ');
       const privacyRadius = document.querySelector('input[name="privacy_radius"]:checked').value;
 
-      // 組裝乾淨的卡片列表 HTML
       const summaryHTML = `
+        <div class="summary-item"><span class="summary-label">寵物名字</span><span class="summary-val">${petName}</span></div>
         <div class="summary-item"><span class="summary-label">物種與體型</span><span class="summary-val">${species} (${size}型 / ${furLength})</span></div>
         <div class="summary-item"><span class="summary-label">毛色色系</span><span class="summary-val">${furColor}</span></div>
         <div class="summary-item"><span class="summary-label">配件特徵</span><span class="summary-val">${accText}</span></div>
@@ -596,7 +783,6 @@
       document.getElementById('summaryModal').style.display = 'none';
     }
 
-    // 使用者在自製彈窗點擊「確認送出」時正式執行
     async function executeSubmit() {
       closeSummaryModal();
       const statusBox = document.getElementById('submit-status');
@@ -604,7 +790,6 @@
       statusBox.innerText = "⏳ 正在上傳照片並建立走失公告...";
 
       try {
-        // 第一張照片剛好只會在此處被上傳一次
         const photoPath1 = await uploadSinglePhoto('photo_1');
         const photoPath2 = await uploadSinglePhoto('photo_2');
         const photoPath3 = await uploadSinglePhoto('photo_3');
@@ -613,6 +798,7 @@
         const notes = document.getElementById('notes').value.trim();
 
         const payload = {
+          pet_name: document.getElementById('pet_name').value.trim(),
           species: document.getElementById('species').value,
           size: document.getElementById('size').value,
           fur_length: document.getElementById('fur_length').value,

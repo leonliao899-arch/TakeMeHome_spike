@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>目擊通報 - TakeMeHome</title>
+
+  <!-- Leaflet：步驟 2 的小地圖（GPS 被拒絕時，改用點地圖選位置） -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 0 auto;
+      padding: 15px 16px 40px;
+      max-width: 500px;
+      line-height: 1.5;
+      color: #333;
+      background: #fff;
+    }
+    h2 { margin: 4px 0 10px; font-size: 20px; }
+    h3 { margin: 18px 0 10px; font-size: 16px; color: #1e3a8a; }
+
+    /* ===== 進度列：1 拍照 → 2 確認資料 → 3 送出 ===== */
+    .progress { display: flex; gap: 6px; margin-bottom: 16px; }
+    .progress div {
+      flex: 1; text-align: center; font-size: 12px; padding: 6px 0;
+      border-radius: 6px; background: #f1f5f9; color: #94a3b8;
+    }
+    .progress div.active { background: #2563eb; color: #fff; font-weight: bold; }
+    .progress div.done { background: #dbeafe; color: #1d4ed8; }
+
+    .screen { display: none; }
+    .screen.active { display: block; }
+
+    /* ===== 提示框 ===== */
+    .hint {
+      font-size: 13px; color: #475569; background: #f1f5f9;
+      border-radius: 6px; padding: 8px 10px; margin-bottom: 14px;
+    }
+    .hint div + div { margin-top: 2px; }
+
+    /* ===== 步驟 1：照片格 ===== */
+    .photo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .photo-slot {
+      position: relative; aspect-ratio: 1 / 1; border-radius: 8px;
+      overflow: hidden; background: #f8fafc; border: 1px solid #e2e8f0;
+    }
+    .photo-slot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .photo-slot .size-tag {
+      position: absolute; left: 0; right: 0; bottom: 0; font-size: 10px;
+      color: #fff; background: rgba(0,0,0,0.55); text-align: center; padding: 1px 0;
+    }
+    .photo-slot .remove-btn {
+      position: absolute; top: 4px; right: 4px; width: 26px; height: 26px;
+      border-radius: 50%; border: none; background: rgba(0,0,0,0.6);
+      color: #fff; font-size: 15px; line-height: 26px; padding: 0; cursor: pointer;
+    }
+    .add-slot {
+      aspect-ratio: 1 / 1; border: 2px dashed #93c5fd; border-radius: 8px;
+      background: #eff6ff; color: #1d4ed8; font-size: 13px; font-weight: bold;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      cursor: pointer; text-align: center; padding: 4px;
+    }
+    .add-slot .icon { font-size: 26px; }
+    .photo-count { font-size: 13px; color: #64748b; margin-top: 6px; }
+
+    /* ===== 表單欄位 ===== */
+    .form-group { margin-bottom: 16px; }
+    label.field-label { display: block; margin-bottom: 6px; font-weight: bold; }
+    .required { color: #dc2626; margin-left: 2px; }
+    .optional { color: #64748b; font-weight: normal; font-size: 13px; }
+    select, input[type="text"], input[type="datetime-local"], input[type="email"] {
+      width: 100%; padding: 9px; font-size: 16px; /* 16px 以上 iPhone 才不會自動放大 */
+      border: 1px solid #ccc; border-radius: 6px; background: #fff;
+    }
+    .tag { font-size: 12px; color: #666; margin-top: 4px; }
+
+    /* 物種 / 體型 / 毛長：大按鈕單選（手機比下拉選單好點） */
+    .chips { display: flex; gap: 8px; }
+    .chips label {
+      flex: 1; text-align: center; padding: 9px 0; border: 1px solid #cbd5e1;
+      border-radius: 8px; cursor: pointer; font-size: 15px; background: #fff;
+    }
+    .chips input { position: absolute; opacity: 0; pointer-events: none; }
+    .chips label:has(input:checked) {
+      border: 2px solid #2563eb; background: #eff6ff; color: #1d4ed8; font-weight: bold;
+    }
+
+    .input-error { border: 2px solid #dc2626 !important; background-color: #fef2f2; }
+    .error-text { color: #dc2626; font-size: 13px; margin-top: 4px; display: none; }
+    .error-text.show { display: block; }
+
+    /* ===== 地點小地圖 ===== */
+    #pickMap {
+      height: 220px; border-radius: 8px; border: 1px solid #cbd5e1; margin-top: 8px;
+      z-index: 0;
+    }
+    .loc-status { font-size: 13px; color: #475569; margin-top: 6px; }
+    .loc-status.ok { color: #16a34a; font-weight: bold; }
+
+    /* ===== 按鈕 ===== */
+    button {
+      padding: 11px 18px; font-size: 15px; cursor: pointer; border-radius: 6px;
+      border: 1px solid #aaa; background: #f0f0f0; color: #333;
+    }
+    button.btn-primary { background: #2563eb; color: #fff; border: none; font-weight: bold; }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .btn-group { display: flex; justify-content: space-between; gap: 10px; margin-top: 22px; }
+    .btn-group button { flex: 1; }
+    .btn-full { width: 100%; margin-top: 18px; }
+
+    /* ===== 自製確認彈窗（與飼主端同一套樣式） ===== */
+    .modal-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.6);
+      z-index: 9999; align-items: center; justify-content: center; padding: 15px;
+    }
+    .modal-card {
+      background: #fff; width: 100%; max-width: 440px; max-height: 90vh; overflow-y: auto;
+      border-radius: 12px; padding: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.25);
+    }
+    .modal-card h3 {
+      margin-top: 0; text-align: center; border-bottom: 2px solid #e2e8f0; padding-bottom: 8px;
+    }
+    .summary-list {
+      font-size: 14px; line-height: 1.8; background: #f8fafc; padding: 12px 14px;
+      border-radius: 8px; border: 1px solid #e2e8f0;
+    }
+    .summary-item {
+      display: flex; justify-content: space-between; gap: 10px;
+      border-bottom: 1px dashed #cbd5e1; padding: 4px 0;
+    }
+    .summary-item:last-child { border-bottom: none; }
+    .summary-label { color: #64748b; flex-shrink: 0; }
+    .summary-val { font-weight: bold; color: #0f172a; text-align: right; word-break: break-all; }
+    .modal-actions { display: flex; gap: 12px; margin-top: 18px; }
+    .modal-actions button { flex: 1; font-weight: bold; }
+
+    /* ===== 送出後：狀態、候選卡片、成功畫面 ===== */
+    .status-box { text-align: center; font-weight: bold; padding: 30px 0; color: #2563eb; }
+    .status-box.error { color: #dc2626; }
+    .cand-card {
+      border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px;
+      margin-bottom: 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    }
+    .cand-head { display: flex; gap: 12px; }
+    .cand-photo {
+      width: 84px; height: 84px; border-radius: 8px; object-fit: cover; flex-shrink: 0;
+      background: #f1f5f9; display: flex; align-items: center; justify-content: center;
+      font-size: 32px;
+    }
+    .cand-name { font-size: 17px; font-weight: bold; }
+    .cand-code { font-size: 12px; color: #64748b; }
+    .cand-meta { font-size: 13px; margin-top: 4px; }
+    .cand-card details { font-size: 13px; margin-top: 8px; color: #475569; }
+    .cand-card details ul { margin: 6px 0 0; padding-left: 18px; }
+    .cand-card .btn-pick { width: 100%; margin-top: 10px; }
+    .btn-none { width: 100%; background: #fff; border: 1px solid #cbd5e1; color: #475569; }
+
+    .done-box { text-align: center; padding: 10px 0; }
+    .done-box .big { font-size: 44px; }
+    .done-msg { font-size: 16px; font-weight: bold; margin: 8px 0 16px; }
+    .track-box {
+      text-align: left; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;
+      padding: 12px; font-size: 13px;
+    }
+    .track-link { word-break: break-all; color: #2563eb; font-weight: bold; }
+    .done-links { margin-top: 18px; display: flex; flex-direction: column; gap: 10px; }
+    .done-links a {
+      display: block; padding: 11px; border-radius: 6px; text-decoration: none;
+      font-weight: bold; text-align: center;
+    }
+    .link-primary { background: #2563eb; color: #fff; }
+    .link-secondary { border: 1px solid #cbd5e1; color: #475569; }
+  </style>
+</head>
+<body>
+
+  <h2>👀 目擊通報</h2>
+  <div class="progress">
+    <div id="prog-1" class="active">① 拍照</div>
+    <div id="prog-2">② 確認資料</div>
+    <div id="prog-3">③ 送出</div>
+  </div>
+
+  <!-- ===== 步驟 1：拍照＋上傳（先在手機上預覽與壓縮，按最終送出才真的上傳） ===== -->
+  <div class="screen active" id="screen-1">
+    <div class="hint">
+      <div>📷 拍 1～3 張照片，請盡量讓寵物清楚入鏡。</div>
+      <div>🙈 請避免拍到路人臉部或車牌，若不小心拍到可以刪掉重選。</div>
+    </div>
+
+    <div class="photo-grid" id="photoGrid"></div>
+    <!-- 隱藏的檔案選擇器：手機會跳出「拍照／照片圖庫」選單 -->
+    <input type="file" id="photoInput" accept="image/*" multiple style="display:none"
+           onchange="handlePhotoSelect(this)">
+    <div class="photo-count" id="photoCount">已選 0 / 3 張（至少 1 張）</div>
+    <div class="error-text" id="photo-error"></div>
+
+    <button type="button" class="btn-primary btn-full" id="toStep2Btn" onclick="goStep2()">下一步 ➔</button>
+  </div>
+
+  <!-- ===== 步驟 2：檢視並修正（特徵＋時間地點＋選填 email，同一個畫面） ===== -->
+  <div class="screen" id="screen-2">
+    <h3>🐾 這隻動物長怎樣？</h3>
+    <div class="hint">看不清楚沒關係，選你最有把握的就好。</div>
+
+    <div class="form-group">
+      <label class="field-label">物種<span class="required">*</span></label>
+      <div class="chips" id="species">
+        <label><input type="radio" name="species" value="狗">🐶 狗</label>
+        <label><input type="radio" name="species" value="貓">🐱 貓</label>
+      </div>
+      <div class="error-text" id="species-error">請選擇物種</div>
+    </div>
+
+    <div class="form-group">
+      <label class="field-label">體型<span class="required">*</span></label>
+      <div class="chips" id="size">
+        <label><input type="radio" name="size" value="小">小型</label>
+        <label><input type="radio" name="size" value="中">中型</label>
+        <label><input type="radio" name="size" value="大">大型</label>
+      </div>
+      <div class="error-text" id="size-error">請選擇體型</div>
+    </div>
+
+    <div class="form-group">
+      <label class="field-label">毛長<span class="required">*</span></label>
+      <div class="chips" id="fur_length">
+        <label><input type="radio" name="fur_length" value="短毛">短毛</label>
+        <label><input type="radio" name="fur_length" value="長毛">長毛</label>
+        <label><input type="radio" name="fur_length" value="捲毛">捲毛</label>
+      </div>
+      <div class="error-text" id="fur_length-error">請選擇毛長</div>
+    </div>
+
+    <!-- 下拉選項的 value 必須與飼主表單一字不差，matcher.py 是用字串完全相等比對 -->
+    <div class="form-group">
+      <label class="field-label" for="fur_color">毛色色系<span class="required">*</span></label>
+      <select id="fur_color">
+        <option value="">-- 請選擇毛色色系 --</option>
+        <option value="黑/深棕">黑 / 深棕</option>
+        <option value="白/米白/淺黃">白 / 米白 / 淺黃</option>
+        <option value="黃/棕/褐色">黃 / 棕 / 褐色</option>
+        <option value="虎斑/花紋">虎斑 / 花紋</option>
+        <option value="三花/雙色">三花 / 雙色</option>
+      </select>
+      <div class="error-text" id="fur_color-error">請選擇毛色色系</div>
+    </div>
+
+    <div class="form-group">
+      <label class="field-label" for="accessory">配件<span class="required">*</span></label>
+      <select id="accessory" onchange="toggleAccessoryColor()">
+        <option value="">-- 請選擇是否有配件 --</option>
+        <option value="沒有">沒有 / 沒看到</option>
+        <option value="項圈">項圈</option>
+        <option value="胸背帶">胸背帶</option>
+        <option value="衣服">衣服</option>
+        <option value="名牌">名牌</option>
+        <option value="其他">其他</option>
+      </select>
+      <div class="error-text" id="accessory-error">請選擇配件</div>
+    </div>
+
+    <div class="form-group" id="accessory-color-group" style="display:none;">
+      <label class="field-label" for="accessory_color">配件顏色<span class="required">*</span></label>
+      <select id="accessory_color">
+        <option value="">-- 請選擇配件顏色 --</option>
+        <option value="紅色">紅色</option>
+        <option value="藍色">藍色</option>
+        <option value="黃色">黃色</option>
+        <option value="綠色">綠色</option>
+        <option value="黑色">黑色</option>
+        <option value="其他">其他</option>
+      </select>
+      <div class="error-text" id="accessory_color-error">請選擇配件顏色</div>
+    </div>
+
+    <div class="form-group">
+      <label class="field-label" for="special_mark">特殊記號<span class="required">*</span></label>
+      <select id="special_mark">
+        <option value="">-- 請選擇特殊記號 --</option>
+        <option value="看不清楚">看不清楚</option>
+        <option value="沒有">沒有</option>
+        <option value="白襪子">白襪子</option>
+        <option value="胸前白斑">胸前白斑</option>
+        <option value="眼周色塊">眼周色塊</option>
+        <option value="斷尾">斷尾</option>
+        <option value="缺耳">缺耳</option>
+        <option value="跛腳">跛腳</option>
+        <option value="其他">其他</option>
+      </select>
+      <div class="tag">距離太遠、天色太暗看不到就選「看不清楚」，不會影響通報。</div>
+      <div class="error-text" id="special_mark-error">請選擇特殊記號（看不到可選「看不清楚」）</div>
+    </div>
+
+    <h3>📍 在哪裡、什麼時候看到？</h3>
+
+    <div class="form-group">
+      <label class="field-label">目擊地點<span class="required">*</span></label>
+      <button type="button" onclick="useMyLocation()" id="gpsBtn">📍 使用目前位置</button>
+      <div id="pickMap"></div>
+      <div class="loc-status" id="locStatus">也可以直接點地圖，選擇看到牠的位置。</div>
+      <div class="error-text" id="location-error">請按「使用目前位置」或在地圖上點選目擊地點</div>
+    </div>
+
+    <div class="form-group">
+      <label class="field-label" for="sighting_time">目擊時間<span class="required">*</span></label>
+      <input type="datetime-local" id="sighting_time">
+      <div class="tag">預設為現在；如果是稍早看到的，請改成實際時間。</div>
+      <div class="error-text" id="sighting_time-error">請填寫目擊時間</div>
+    </div>
+
+    <div class="form-group">
+      <label class="field-label" for="description">目擊描述 <span class="optional">(選填)</span></label>
+      <input type="text" id="description" maxlength="100" placeholder="如：躲在路邊紅色轎車車底">
+    </div>
+
+    <h3>💌 想知道牠有沒有回家？</h3>
+    <div class="form-group">
+      <label class="field-label" for="contact_email">Email <span class="optional">(選填，不公開)</span></label>
+      <input type="email" id="contact_email" placeholder="example@gmail.com">
+      <div class="tag">留下 email，若飼主確認是他的寵物，我們會通知你這個好消息。</div>
+      <div class="error-text" id="contact_email-error">Email 格式不正確，或留空不填</div>
+    </div>
+
+    <div class="btn-group">
+      <button type="button" onclick="showScreen(1)">⬅ 上一步</button>
+      <button type="button" class="btn-primary" onclick="openSummaryModal()">送出通報 ➔</button>
+    </div>
+  </div>
+
+  <!-- ===== 步驟 3：送出中 → 反向推薦清單 → 完成 ===== -->
+  <div class="screen" id="screen-3">
+    <div id="resultArea"></div>
+  </div>
+
+  <!-- 自製確認彈窗：不用原生 confirm()，手機 WebView 排版才可控 -->
+  <div class="modal-overlay" id="summaryModal">
+    <div class="modal-card">
+      <h3>📋 請確認通報內容</h3>
+      <div class="summary-list" id="summaryContent"></div>
+      <p style="font-size: 12px; color: #64748b; margin: 10px 0 0; text-align: center;">
+        * 你的 Email 不會公開，也不會提供給飼主。
+      </p>
+      <div class="modal-actions">
+        <button type="button" onclick="closeSummaryModal()">返回修改</button>
+        <button type="button" class="btn-primary" id="confirmSubmitBtn" onclick="executeSubmit()">確認送出 🚀</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    // ==========================================
+    // 共用設定
+    // ==========================================
+    const MAX_PHOTOS = 3;
+    const MAX_SIDE = 1280;        // 壓縮後長邊上限（規劃文件「十三」）
+    const JPEG_QUALITY = 0.8;     // 壓縮品質約 80%
+    const DAAN_CENTER = [25.026, 121.543];  // 地圖預設大安區
+
+    // 已選照片：{ blob: 壓縮後的 JPEG, url: 預覽網址, origSize: 原檔大小 }
+    let photos = [];
+    let pickedLatLng = null;      // 目擊座標（GPS 或點地圖）
+    let sightingId = null;        // 送出成功後的通報 ID（指認時要用）
+    let trackingToken = null;
+
+    function showScreen(n) {
+      document.querySelectorAll('.screen').forEach(el => el.classList.remove('active'));
+      document.getElementById('screen-' + n).classList.add('active');
+      for (let i = 1; i <= 3; i++) {
+        const p = document.getElementById('prog-' + i);
+        p.className = i < n ? 'done' : (i === n ? 'active' : '');
+      }
+      window.scrollTo(0, 0);
+      // Leaflet 在隱藏的 div 裡初始化會算錯尺寸，顯示後要重新計算
+      if (n === 2) setTimeout(() => pickMap.invalidateSize(), 50);
+    }
+
+    // 錯誤提示：欄位加紅框、顯示錯誤文字
+    function setError(id, show, msg) {
+      const errEl = document.getElementById(id + '-error');
+      const field = document.getElementById(id);
+      if (!errEl) return;   // 選填欄位（如目擊描述）沒有錯誤提示
+      if (msg) errEl.textContent = msg;
+      errEl.classList.toggle('show', show);
+      if (field) field.classList.toggle('input-error', show);
+    }
+
+    function formatBytes(n) {
+      return n >= 1024 * 1024 ? (n / 1024 / 1024).toFixed(1) + 'MB' : Math.round(n / 1024) + 'KB';
+    }
+
+    // ==========================================
+    // 步驟 1：選照片 → 前端用 canvas 壓縮 → 預覽
+    // ==========================================
+    /**
+     * 把手機原圖縮到長邊 1280px、轉成 JPEG（品質 80%）。
+     * 好處：上傳流量從數 MB 降到約 200KB，伺服器不必裝 Pillow 處理；
+     * iPhone 的 HEIC 也會在這一步被瀏覽器轉成 JPEG，後端副檔名檢查不會擋。
+     * 現代瀏覽器載入圖片時會自動依 EXIF 轉正方向，畫到 canvas 不會歪。
+     */
+    function compressImage(file) {
+      return new Promise((resolve, reject) => {
+        const srcUrl = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+          const scale = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.round(img.naturalWidth * scale);
+          canvas.height = Math.round(img.naturalHeight * scale);
+          canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+          URL.revokeObjectURL(srcUrl);
+          canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('壓縮失敗')),
+                        'image/jpeg', JPEG_QUALITY);
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(srcUrl);
+          reject(new Error('無法讀取'));
+        };
+        img.src = srcUrl;
+      });
+    }
+
+    async function handlePhotoSelect(input) {
+      const files = Array.from(input.files || []);
+      input.value = '';   // 清空，讓同一張照片刪掉後還能再選
+      if (files.length === 0) return;
+
+      const room = MAX_PHOTOS - photos.length;
+      if (files.length > room) {
+        setError('photo', true, `最多 3 張，已幫你保留前 ${room} 張`);
+      } else {
+        setError('photo', false);
+      }
+
+      const btn = document.getElementById('toStep2Btn');
+      btn.disabled = true;
+      document.getElementById('photoCount').textContent = '⏳ 照片處理中…';
+
+      for (const file of files.slice(0, room)) {
+        try {
+          const blob = await compressImage(file);
+          photos.push({ blob, url: URL.createObjectURL(blob), origSize: file.size });
+        } catch (err) {
+          setError('photo', true, '有一張照片無法讀取，請換一張（建議 jpg 或 png）');
+        }
+      }
+      btn.disabled = false;
+      renderPhotos();
+    }
+
+    function removePhoto(index) {
+      URL.revokeObjectURL(photos[index].url);
+      photos.splice(index, 1);
+      setError('photo', false);
+      renderPhotos();
+    }
+
+    function renderPhotos() {
+      const grid = document.getElementById('photoGrid');
+      grid.innerHTML = '';
+      photos.forEach((p, i) => {
+        const slot = document.createElement('div');
+        slot.className = 'photo-slot';
+        slot.innerHTML = `<img alt="目擊照片 ${i + 1}">
+          <div class="size-tag"></div>
+          <button type="button" class="remove-btn" aria-label="刪除這張">×</button>`;
+        slot.querySelector('img').src = p.url;
+        slot.querySelector('.size-tag').textContent =
+          `${formatBytes(p.origSize)} → ${formatBytes(p.blob.size)}`;
+        slot.querySelector('.remove-btn').onclick = () => removePhoto(i);
+        grid.appendChild(slot);
+      });
+      if (photos.length < MAX_PHOTOS) {
+        const add = document.createElement('div');
+        add.className = 'add-slot';
+        add.innerHTML = `<span class="icon">📷</span>${photos.length === 0 ? '拍照 / 選照片' : '再加一張'}`;
+        add.onclick = () => document.getElementById('photoInput').click();
+        grid.appendChild(add);
+      }
+      document.getElementById('photoCount').textContent =
+        `已選 ${photos.length} / 3 張（至少 1 張）`;
+    }
+
+    function goStep2() {
+      if (photos.length === 0) {
+        setError('photo', true, '請至少拍 1 張照片');
+        return;
+      }
+      setError('photo', false);
+      showScreen(2);
+    }
+
+    // ==========================================
+    // 步驟 2：欄位、地點、時間
+    // ==========================================
+    function getRadio(name) {
+      const el = document.querySelector(`input[name="${name}"]:checked`);
+      return el ? el.value : '';
+    }
+
+    function toggleAccessoryColor() {
+      const acc = document.getElementById('accessory').value;
+      const group = document.getElementById('accessory-color-group');
+      if (acc === '' || acc === '沒有') {
+        group.style.display = 'none';
+        document.getElementById('accessory_color').value = '';
+        setError('accessory_color', false);
+      } else {
+        group.style.display = 'block';
+      }
+    }
+
+    // 時間預設「現在」，並限制不能選未來時間
+    function toLocalInputValue(d) {
+      const pad = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+    const timeInput = document.getElementById('sighting_time');
+    timeInput.value = toLocalInputValue(new Date());
+    timeInput.max = toLocalInputValue(new Date());
+
+    // 小地圖：點地圖就是選位置（GPS 被拒絕或不準時的備案）
+    const pickMap = L.map('pickMap').setView(DAAN_CENTER, 15);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '&copy; OpenStreetMap'
+    }).addTo(pickMap);
+    let pickMarker = null;
+
+    function setPickedLocation(lat, lng, source) {
+      pickedLatLng = { lat: Number(lat.toFixed(6)), lng: Number(lng.toFixed(6)) };
+      if (pickMarker) {
+        pickMarker.setLatLng([lat, lng]);
+      } else {
+        pickMarker = L.circleMarker([lat, lng], {
+          radius: 10, fillColor: '#3b82f6', color: '#fff', weight: 3, fillOpacity: 0.95
+        }).addTo(pickMap);
+      }
+      const status = document.getElementById('locStatus');
+      status.className = 'loc-status ok';
+      status.textContent = `✅ 已選定位置（${source}）。位置不對可以再點地圖修正。`;
+      setError('location', false);
+    }
+
+    pickMap.on('click', e => setPickedLocation(e.latlng.lat, e.latlng.lng, '地圖點選'));
+
+    function useMyLocation() {
+      const status = document.getElementById('locStatus');
+      if (!navigator.geolocation) {
+        status.className = 'loc-status';
+        status.textContent = '⚠️ 這個瀏覽器不支援定位，請直接在地圖上點選目擊位置。';
+        return;
+      }
+      const btn = document.getElementById('gpsBtn');
+      btn.disabled = true;
+      status.className = 'loc-status';
+      status.textContent = '⏳ 正在取得定位…';
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          btn.disabled = false;
+          const { latitude, longitude } = pos.coords;
+          pickMap.setView([latitude, longitude], 17);
+          setPickedLocation(latitude, longitude, 'GPS');
+        },
+        err => {
+          btn.disabled = false;
+          status.className = 'loc-status';
+          status.textContent = err.code === 1
+            ? '⚠️ 沒有定位權限，請直接在地圖上點選目擊位置。'
+            : '⚠️ 暫時抓不到定位，請直接在地圖上點選目擊位置。';
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    }
+
+    // 使用者補填欄位後，立刻拿掉該欄位的紅框與錯誤文字（不用等到再按一次送出）
+    document.querySelectorAll('#screen-2 input, #screen-2 select').forEach(el => {
+      el.addEventListener('change', () => setError(el.type === 'radio' ? el.name : el.id, false));
+    });
+
+    // 步驟 2 全部欄位檢查；回傳第一個錯誤的元素，方便捲動過去
+    function validateStep2() {
+      const errors = [];
+      const check = (id, ok, msg) => { setError(id, !ok, msg); if (!ok) errors.push(id); };
+
+      check('species', !!getRadio('species'));
+      check('size', !!getRadio('size'));
+      check('fur_length', !!getRadio('fur_length'));
+      check('fur_color', !!document.getElementById('fur_color').value);
+      const acc = document.getElementById('accessory').value;
+      check('accessory', !!acc);
+      if (acc && acc !== '沒有') {
+        check('accessory_color', !!document.getElementById('accessory_color').value);
+      }
+      check('special_mark', !!document.getElementById('special_mark').value);
+      check('location', !!pickedLatLng);
+
+      const t = timeInput.value;
+      if (!t) {
+        check('sighting_time', false, '請填寫目擊時間');
+      } else {
+        // 允許 5 分鐘誤差（手機時鐘可能不準）
+        const future = new Date(t).getTime() > Date.now() + 5 * 60 * 1000;
+        check('sighting_time', !future, '目擊時間不能晚於現在');
+      }
+
+      const email = document.getElementById('contact_email').value.trim();
+      check('contact_email', !email || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
+
+      if (errors.length > 0) {
+        const target = document.getElementById(errors[0] === 'location' ? 'gpsBtn' : errors[0]);
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return false;
+      }
+      return true;
+    }
+
+    function collectForm() {
+      const acc = document.getElementById('accessory').value;
+      return {
+        species: getRadio('species'),
+        size: getRadio('size'),
+        fur_length: getRadio('fur_length'),
+        fur_color: document.getElementById('fur_color').value,
+        accessory: acc,
+        accessory_color: acc === '沒有' ? '無' : document.getElementById('accessory_color').value,
+        special_mark: document.getElementById('special_mark').value,
+        lat: pickedLatLng ? pickedLatLng.lat : '',
+        lng: pickedLatLng ? pickedLatLng.lng : '',
+        // matcher.py 用 'YYYY-MM-DD HH:MM'，把 datetime-local 的 T 換成空格（後端也會再保險一次）
+        sighting_time: timeInput.value.replace('T', ' '),
+        description: document.getElementById('description').value.trim(),
+        contact_email: document.getElementById('contact_email').value.trim()
+      };
+    }
+
+    // ==========================================
+    // 步驟 3：確認彈窗 → 單趟批次上傳 → 存檔＋反向推薦
+    // ==========================================
+    function openSummaryModal() {
+      if (!validateStep2()) return;
+      const f = collectForm();
+      const rows = [
+        ['照片', `${photos.length} 張`],
+        ['物種／體型', `${f.species}（${f.size}型／${f.fur_length}）`],
+        ['毛色色系', f.fur_color],
+        ['配件', f.accessory === '沒有' ? '沒有 / 沒看到' : `${f.accessory_color}${f.accessory}`],
+        ['特殊記號', f.special_mark],
+        ['目擊時間', f.sighting_time],
+        ['目擊座標', `${f.lat}, ${f.lng}`],
+        ['目擊描述', f.description || '無'],
+        ['你的 Email', f.contact_email || '未填（不會收到回饋信）']
+      ];
+      // 用 textContent 填值，避免使用者輸入的文字被當成 HTML 執行
+      const box = document.getElementById('summaryContent');
+      box.innerHTML = '';
+      rows.forEach(([label, val]) => {
+        const item = document.createElement('div');
+        item.className = 'summary-item';
+        item.innerHTML = '<span class="summary-label"></span><span class="summary-val"></span>';
+        item.children[0].textContent = label;
+        item.children[1].textContent = val;
+        box.appendChild(item);
+      });
+      document.getElementById('summaryModal').style.display = 'flex';
+    }
+
+    function closeSummaryModal() {
+      document.getElementById('summaryModal').style.display = 'none';
+    }
+
+    async function uploadPhoto(blob) {
+      const formData = new FormData();
+      formData.append('photo', blob, 'sighting.jpg');   // 壓縮後一律是 JPEG
+      const res = await fetch('/api/upload', { method: 'POST', body: formData });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || '照片上傳失敗');
+      return data.file_path;
+    }
+
+    function showStatus(text, isError) {
+      const area = document.getElementById('resultArea');
+      area.innerHTML = '<div class="status-box"></div>';
+      const box = area.firstChild;
+      box.textContent = text;
+      if (isError) box.classList.add('error');
+      return area;
+    }
+
+    async function executeSubmit() {
+      const confirmBtn = document.getElementById('confirmSubmitBtn');
+      confirmBtn.disabled = true;   // 防止連點造成重複通報
+      closeSummaryModal();
+      showScreen(3);
+      showStatus('⏳ 正在上傳照片並送出通報…');
+
+      try {
+        // 1. 單趟批次上傳：到這一步才真的把照片傳到伺服器
+        const paths = [];
+        for (const p of photos) paths.push(await uploadPhoto(p.blob));
+
+        // 2. 送出通報（後端先存檔，再算反向推薦清單）
+        const payload = collectForm();
+        payload.photo_1 = paths[0] || '';
+        payload.photo_2 = paths[1] || '';
+        payload.photo_3 = paths[2] || '';
+
+        const res = await fetch('/api/sightings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || '通報送出失敗');
+
+        sightingId = data.sighting_id;
+        trackingToken = data.tracking_token;
+        if (data.candidates_count > 0) {
+          renderCandidates(data.candidates);
+        } else {
+          renderDone('none-found');
+        }
+      } catch (err) {
+        const area = showStatus('❌ ' + err.message + '，請檢查網路後再試一次。', true);
+        const back = document.createElement('button');
+        back.type = 'button';
+        back.className = 'btn-primary btn-full';
+        back.textContent = '⬅ 回到上一步';
+        back.onclick = () => showScreen(2);
+        area.appendChild(back);
+      } finally {
+        confirmBtn.disabled = false;
+      }
+    }
+
+    // ==========================================
+    // 反向推薦清單：「可能是這隻寵物嗎？」
+    // ==========================================
+    function renderCandidates(candidates) {
+      const area = document.getElementById('resultArea');
+      area.innerHTML = `
+        <h3 style="margin-top:0">✅ 通報已存檔！可能是這隻寵物嗎？</h3>
+        <div class="hint">以下是外觀特徵相近、仍在尋找中的走失公告。看照片覺得是同一隻，就按「就是這隻！」</div>
+        <div id="candList"></div>
+        <button type="button" class="btn-none" id="noneBtn">可能都不是</button>
+      `;
+      const list = document.getElementById('candList');
+
+      candidates.forEach(c => {
+        const card = document.createElement('div');
+        card.className = 'cand-card';
+        card.innerHTML = `
+          <div class="cand-head">
+            <div class="cand-photo">🐾</div>
+            <div>
+              <div class="cand-name"></div>
+              <div class="cand-code"></div>
+              <div class="cand-meta level"></div>
+              <div class="cand-meta dist"></div>
+            </div>
+          </div>
+          <details><summary>吻合明細（外觀 ${Number(c.appearance_score)} 分）</summary><ul></ul></details>
+          <button type="button" class="btn-primary btn-pick">就是這隻！</button>
+        `;
+        // 飼主填的文字一律用 textContent 放進畫面，避免 XSS
+        if (c.photo_1) {
+          const img = document.createElement('img');
+          img.className = 'cand-photo';
+          img.alt = '走失公告照片';
+          img.src = c.photo_1;
+          card.querySelector('.cand-photo').replaceWith(img);
+        }
+        card.querySelector('.cand-name').textContent = c.pet_name;
+        card.querySelector('.cand-code').textContent = '案件編號 ' + c.case_code;
+        card.querySelector('.level').textContent = c.match_level;
+        card.querySelector('.dist').textContent = `📏 距離走失地點約 ${c.distance_km} 公里`;
+
+        const ul = card.querySelector('ul');
+        Object.entries(c.details || {}).forEach(([name, val]) => {
+          const li = document.createElement('li');
+          li.textContent = `${name}：${Array.isArray(val) ? val[1] : val}`;
+          ul.appendChild(li);
+        });
+
+        card.querySelector('.btn-pick').onclick = () => pickCandidate(c);
+        list.appendChild(card);
+      });
+
+      document.getElementById('noneBtn').onclick = () => renderDone('not-picked');
+    }
+
+    async function pickCandidate(c) {
+      // 鎖住所有按鈕，避免重複指認
+      document.querySelectorAll('#resultArea button').forEach(b => b.disabled = true);
+      try {
+        const res = await fetch(`/api/sightings/${sightingId}/match`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lost_id: c.lost_id, score: c.appearance_score })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || '指認失敗');
+        renderDone('picked', c.pet_name);
+      } catch (err) {
+        document.querySelectorAll('#resultArea button').forEach(b => b.disabled = false);
+        alert('❌ ' + err.message + '，請再按一次。');
+      }
+    }
+
+    // ==========================================
+    // 完成畫面：誠實提示語＋追蹤連結
+    // ==========================================
+    function renderDone(mode, petName) {
+      const area = document.getElementById('resultArea');
+      const trackUrl = `${location.origin}/track/${trackingToken}`;
+      let msg;
+      if (mode === 'picked') {
+        msg = `通報已記錄並顯示在地圖上，已優先通知「${petName}」的飼主。`;
+      } else {
+        msg = '通報已記錄並顯示在地圖上，若特徵符合，系統會通知飼主。';
+      }
+
+      area.innerHTML = `
+        <div class="done-box">
+          <div class="big">${mode === 'picked' ? '🎯' : '✅'}</div>
+          <div class="done-msg"></div>
+          ${mode === 'none-found' ? '<div class="hint">目前沒有外觀相近的走失公告。之後有飼主發布相符的公告時，系統一樣會把你的通報列給他參考。</div>' : ''}
+          <div class="track-box">
+            🔖 <strong>你的專屬追蹤連結</strong>（請截圖或加入書籤，之後可查詢這筆通報的狀態）
+            <div style="margin-top:6px"><a class="track-link" id="trackLink"></a></div>
+            <button type="button" id="copyBtn" style="margin-top:8px; width:100%">📋 複製連結</button>
+          </div>
+          <div class="done-links">
+            <a href="/" class="link-primary">🗺️ 回到地圖看看</a>
+            <a href="/sighting-form" class="link-secondary">再通報一筆</a>
+          </div>
+        </div>
+      `;
+      area.querySelector('.done-msg').textContent = msg;
+      const link = document.getElementById('trackLink');
+      link.href = trackUrl;
+      link.textContent = trackUrl;
+      document.getElementById('copyBtn').onclick = () => copyText(trackUrl);
+      window.scrollTo(0, 0);
+    }
+
+    async function copyText(text) {
+      const btn = document.getElementById('copyBtn');
+      try {
+        await navigator.clipboard.writeText(text);
+        btn.textContent = '✅ 已複製';
+      } catch (e) {
+        // 部分 App 內嵌瀏覽器不允許剪貼簿，改提示長按複製
+        btn.textContent = '請長按上方連結複製';
+      }
+    }
+
+    renderPhotos();
+  </script>
+</body>
+</html>
