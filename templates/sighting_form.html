@@ -245,7 +245,7 @@
   <!-- ===== 步驟 1：拍照＋上傳（先在手機上預覽與壓縮，按最終送出才真的上傳） ===== -->
   <div class="screen active" id="screen-1">
     <div class="hint">
-      <div>📷 拍 1～3 張照片，請盡量讓寵物清楚入鏡。</div>
+      <div>📷 拍 1～5 張照片，請盡量讓寵物清楚入鏡。</div>
       <div>🙈 請避免拍到路人臉部或車牌，若不小心拍到可以刪掉重選。</div>
       <div>🤖 按「下一步」後，AI 會先檢查照片，並幫你預填物種、毛色與配件。</div>
     </div>
@@ -254,7 +254,7 @@
     <!-- 隱藏的檔案選擇器：手機會跳出「拍照／照片圖庫」選單 -->
     <input type="file" id="photoInput" accept="image/*" multiple style="display:none"
            onchange="handlePhotoSelect(this)">
-    <div class="photo-count" id="photoCount">已選 0 / 3 張（至少 1 張）</div>
+    <div class="photo-count" id="photoCount">已選 0 / 5 張（至少 1 張）</div>
     <div class="error-text" id="photo-error"></div>
 
     <button type="button" class="btn-primary btn-full" id="toStep2Btn" onclick="goStep2()">下一步 ➔</button>
@@ -430,7 +430,7 @@
     // ==========================================
     // 共用設定
     // ==========================================
-    const MAX_PHOTOS = 3;
+    const MAX_PHOTOS = 5;
     const MAX_SIDE = 1280;        // 壓縮後長邊上限（規劃文件「十三」）
     const JPEG_QUALITY = 0.8;     // 壓縮品質約 80%
     const DAAN_CENTER = [25.026, 121.543];  // 地圖預設大安區
@@ -554,7 +554,7 @@
       hideGuard();   // 換了照片，上一次的防呆結果不再適用
       const room = MAX_PHOTOS - photos.length;
       if (files.length > room) {
-        setError('photo', true, `最多 3 張，已幫你保留前 ${room} 張`);
+        setError('photo', true, `最多 ${MAX_PHOTOS} 張，已幫你保留前 ${room} 張`);
       } else {
         setError('photo', false);
       }
@@ -606,7 +606,7 @@
         grid.appendChild(add);
       }
       document.getElementById('photoCount').textContent =
-        `已選 ${photos.length} / 3 張（至少 1 張）`;
+        `已選 ${photos.length} / ${MAX_PHOTOS} 張（至少 1 張）`;
     }
 
     async function goStep2() {
@@ -1072,6 +1072,8 @@
         payload.photo_1 = paths[0] || '';
         payload.photo_2 = paths[1] || '';
         payload.photo_3 = paths[2] || '';
+        payload.photo_4 = paths[3] || '';
+        payload.photo_5 = paths[4] || '';
 
         const res = await fetch('/api/sightings', {
           method: 'POST',
@@ -1083,6 +1085,7 @@
 
         sightingId = data.sighting_id;
         trackingToken = data.tracking_token;
+        saveMySighting(payload);
         if (data.candidates_count > 0) {
           renderCandidates(data.candidates);
         } else {
@@ -1192,6 +1195,26 @@
     }
 
     // ==========================================
+    // 🔖 我的目擊通報：存在這台裝置的 localStorage，地圖上的「🔖 我的通報」就能找回追蹤頁
+    // （沒有會員登入時的輕量做法；無痕模式等存取失敗就略過，不影響通報）
+    // ==========================================
+    function saveMySighting(payload) {
+      try {
+        const list = JSON.parse(localStorage.getItem('mySightings') || '[]')
+          .filter(x => x.id !== sightingId);
+        list.unshift({
+          id: sightingId,
+          token: trackingToken,
+          species: payload.species || '',
+          fur_color: payload.fur_color || '',
+          time: payload.sighting_time || '',
+          photo: payload.photo_1 || ''
+        });
+        localStorage.setItem('mySightings', JSON.stringify(list.slice(0, 20)));
+      } catch (e) { /* 無法存取就略過 */ }
+    }
+
+    // ==========================================
     // 完成畫面：誠實提示語＋追蹤連結
     // ==========================================
     function renderDone(mode, petName) {
@@ -1215,7 +1238,7 @@
             <button type="button" id="copyBtn" style="margin-top:8px; width:100%">📋 複製連結</button>
           </div>
           <div class="done-links">
-            <a href="/" class="link-primary">🗺️ 回到地圖看看</a>
+            <a href="/?focus=sighting-${sightingId}" class="link-primary">🗺️ 到地圖看我的通報</a>
             <a href="/sighting-form" class="link-secondary">再通報一筆</a>
           </div>
         </div>

@@ -1,4 +1,7 @@
 venv/
 __pycache__/
 *.pyc
-.env.DS_Store
+.env
+.DS_Store
+database.db
+static/uploads/

@@ -3,19 +3,28 @@ import math
 import os
 import random
 import re
-import sqlite3
 import time
 import uuid
 from datetime import datetime
 from flask import Flask, jsonify, render_template, request
 
-# 讀取專案根目錄的 .env（放 Azure 金鑰用；沒裝 python-dotenv 也不影響執行）
+# 讀取專案根目錄的 .env（放 Azure 金鑰、DATABASE_URL、CLOUDINARY_URL；沒裝 python-dotenv 也不影響執行）
 try:
   from dotenv import load_dotenv
 
   load_dotenv()
 except ImportError:
   pass
+
+# Postgres（Neon）連線：psycopg 3。dict_row 讓查詢結果能像字典一樣用欄位名稱存取，
+# 用法跟原本 sqlite3.Row 一樣（row["species"]、dict(row)、row.keys() 都能用）
+import psycopg
+from psycopg.rows import dict_row
+
+# 照片存放：Cloudinary（需要 CLOUDINARY_URL）。
+# Render 每次重新部署或重啟，伺服器上的檔案都會被清掉，所以照片不能再存在 static/uploads
+import cloudinary
+import cloudinary.uploader
 
 # 引入檢查點一驗證完成的比對核心模組
 from matcher import NOTIFY_THRESHOLD, calculate_match, compare_special_marks, rank_key
@@ -25,25 +34,31 @@ from vision import vision_bp
 
 app = Flask(__name__)
 app.register_blueprint(vision_bp)
-DB_NAME = "database.db"
+
+# Neon 的連線字串（請用 Connection pooling 版本，主機名稱含 -pooler）
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+  raise RuntimeError(
+      "找不到 DATABASE_URL：本機請寫在 .env，Render 請在 Environment 設定"
+  )
+
+# 有設定 CLOUDINARY_URL 才上傳到 Cloudinary；沒設定時退回存在本機 static/uploads，
+# 方便還沒申請 Cloudinary 時也能在本機開發（但部署到 Render 一定要設定）
+USE_CLOUDINARY = bool(os.environ.get("CLOUDINARY_URL"))
+if USE_CLOUDINARY:
+  cloudinary.config(secure=True)  # 自動讀取 CLOUDINARY_URL，回傳 https 網址
+CLOUDINARY_FOLDER = "takemehome"
 
 # 單次請求上限 32MB；超過時 Flask 會自動回 413
-# 不設 10MB 的原因：飼主表單目前直接上傳手機原圖，AI 辨識一次最多送 3 張原圖，
+# 不設 10MB 的原因：飼主表單目前直接上傳手機原圖，AI 辨識一次最多送 5 張照片，
 # iPhone 照片轉成 JPEG 後單張就可能超過 5MB，設太小會讓上傳在中途被切斷。
 # 協尋者表單已在前端壓縮到約 200KB，不受影響；單張 10MB 的限制由 vision.py 檢查。
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024
 
 UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "static", "uploads")
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # matcher.py 計算天數時使用的時間格式，所有寫入資料庫的時間都要統一成這個格式
 TIME_FORMAT = "%Y-%m-%d %H:%M"
-
-# 早期版本的種子資料指向不存在的照片，啟動時一併清空，避免畫面出現破圖
-MISSING_SEED_PHOTOS = (
-    "/static/uploads/demo_dog.jpg",
-    "/static/uploads/sighting_dog.jpg",
-)
 
 
 def normalize_time(raw):
@@ -70,11 +85,11 @@ def normalize_time(raw):
 LOST_PUBLIC_FIELDS = """
     id, case_code, pet_name, species, size, fur_length, accessory, accessory_color,
     fur_color, special_mark, special_mark_note, notes, photo_1, photo_2, photo_3,
-    lat_public, lng_public, lost_time, status
+    photo_4, photo_5, lat_public, lng_public, lost_time, status
 """
 SIGHTING_PUBLIC_FIELDS = """
     id, species, size, fur_length, accessory, accessory_color, fur_color,
-    special_mark, special_mark_note, photo_1, photo_2, photo_3, description,
+    special_mark, special_mark_note, photo_1, photo_2, photo_3, photo_4, photo_5, description,
     sighting_time, status, matched_lost_id
 """
 
@@ -187,33 +202,34 @@ def build_compare(lost, sighting):
 
 
 def get_db_connection():
-  """建立資料庫連線，設定 row_factory 讓查詢結果能像字典一樣用欄位名稱存取"""
-  conn = sqlite3.connect(DB_NAME)
-  conn.row_factory = sqlite3.Row
-  return conn
+  """建立 Postgres 連線；row_factory=dict_row 讓查詢結果能像字典一樣用欄位名稱存取。
 
-
-def ensure_columns(cursor, table, columns):
-  """檢查資料表是否有指定欄位，缺少的就用 ALTER TABLE 補上。
-
-  PRAGMA table_info 會列出資料表目前所有欄位，第 2 個值（索引 1）是欄位名稱。
+  注意：Postgres 的參數佔位符是 %s（SQLite 是 ?）。
+  prepare_threshold=None：關掉 psycopg 的自動 prepared statement。
+  Neon 的 pooled 連線（主機名稱含 -pooler）經過 PgBouncer，
+  prepared statement 在這種連線上可能出現「prepared statement does not exist」錯誤。
   """
-  cursor.execute(f"PRAGMA table_info({table})")
-  existing = {row[1] for row in cursor.fetchall()}
-  for name, col_type in columns.items():
-    if name not in existing:
-      cursor.execute(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}")
+  return psycopg.connect(DATABASE_URL, row_factory=dict_row, prepare_threshold=None)
 
 
 def init_db():
-  """建立資料表，並在首次啟動時自動載入測試資料"""
+  """建立資料表（已存在就跳過）。
+
+  與 SQLite 版的差異：
+  - id 用 SERIAL（Postgres 的自動編號），取代 INTEGER PRIMARY KEY AUTOINCREMENT
+  - 座標一律用 DOUBLE PRECISION：Postgres 的 REAL 只有 6～7 位有效數字，
+    121.543012 這種座標會被截掉尾數，距離與隱私模糊都會失準
+  - 舊版的 ensure_columns（PRAGMA table_info）用不到了：所有欄位直接寫進 CREATE TABLE；
+    之後要加欄位，在下面的 ALTER TABLE ... ADD COLUMN IF NOT EXISTS 補一行即可
+  - 不再自動放種子資料：既有的展示資料由 migrate_to_neon.py 從 database.db 搬過來
+  """
   conn = get_db_connection()
   cursor = conn.cursor()
 
-  # 1. 走失公告表：包含 pet_name 欄位
+  # 1. 走失公告表
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS lost_reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             case_code TEXT NOT NULL,
             pet_name TEXT,
             species TEXT NOT NULL,
@@ -223,14 +239,17 @@ def init_db():
             accessory_color TEXT,
             fur_color TEXT NOT NULL,
             special_mark TEXT NOT NULL,
+            special_mark_note TEXT,
             notes TEXT,
             photo_1 TEXT,
             photo_2 TEXT,
             photo_3 TEXT,
-            lat_precise REAL NOT NULL,
-            lng_precise REAL NOT NULL,
-            lat_public REAL NOT NULL,
-            lng_public REAL NOT NULL,
+            photo_4 TEXT,
+            photo_5 TEXT,
+            lat_precise DOUBLE PRECISION NOT NULL,
+            lng_precise DOUBLE PRECISION NOT NULL,
+            lat_public DOUBLE PRECISION NOT NULL,
+            lng_public DOUBLE PRECISION NOT NULL,
             privacy_radius INTEGER DEFAULT 50,
             lost_time TEXT NOT NULL,
             email TEXT NOT NULL,
@@ -242,7 +261,7 @@ def init_db():
   # 2. 目擊通報表
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS sightings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             species TEXT NOT NULL,
             size TEXT NOT NULL,
             fur_length TEXT NOT NULL,
@@ -250,11 +269,14 @@ def init_db():
             accessory_color TEXT,
             fur_color TEXT NOT NULL,
             special_mark TEXT NOT NULL,
+            special_mark_note TEXT,
             photo_1 TEXT,
             photo_2 TEXT,
             photo_3 TEXT,
-            lat REAL NOT NULL,
-            lng REAL NOT NULL,
+            photo_4 TEXT,
+            photo_5 TEXT,
+            lat DOUBLE PRECISION NOT NULL,
+            lng DOUBLE PRECISION NOT NULL,
             description TEXT,
             sighting_time TEXT NOT NULL,
             matched_lost_id INTEGER,
@@ -262,16 +284,17 @@ def init_db():
             score INTEGER DEFAULT 0,
             tracking_token TEXT,
             contact_email TEXT,
+            ai_prefill TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
-  # 2.2 飼主排除紀錄：記下「哪一則公告的飼主」排除了「哪一筆通報」
-  #     不能只改 sightings.status，因為一筆通報可能同時符合多則公告：
-  #     飼主 A 說「不是我的」，不代表也不是飼主 B 的，B 仍然要看得到。
+  # 3. 飼主排除紀錄：記下「哪一則公告的飼主」排除了「哪一筆通報」
+  #    不能只改 sightings.status，因為一筆通報可能同時符合多則公告：
+  #    飼主 A 說「不是我的」，不代表也不是飼主 B 的，B 仍然要看得到。
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS sighting_rejections (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             lost_id INTEGER NOT NULL,
             sighting_id INTEGER NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -279,82 +302,8 @@ def init_db():
         )
     """)
 
-  # 2.5 補上舊資料庫缺少的欄位
-  #     CREATE TABLE IF NOT EXISTS 只會在「表不存在」時建表；如果表是舊版程式建的，
-  #     之後新增的欄位（例如 pet_name）不會自動補上，查詢時就會出現 no such column。
-  #     所以逐一檢查欄位，缺少的用 ALTER TABLE 補上（補上的欄位舊資料會是空值）。
-  ensure_columns(cursor, "lost_reports", {
-      "pet_name": "TEXT",
-      # 特殊記號選「其他」時，飼主手寫的描述（用關鍵字規則跟協尋者描述比對）
-      "special_mark_note": "TEXT",
-      "notes": "TEXT",
-      "photo_2": "TEXT",
-      "photo_3": "TEXT",
-      "privacy_radius": "INTEGER DEFAULT 50",
-  })
-  ensure_columns(cursor, "sightings", {
-      "photo_2": "TEXT",
-      "photo_3": "TEXT",
-      "description": "TEXT",
-      "matched_lost_id": "INTEGER",
-      "score": "INTEGER DEFAULT 0",
-      "tracking_token": "TEXT",
-      "contact_email": "TEXT",
-      # AI 原始預填結果（JSON 文字）：只用來統計協尋者改了多少，不參與計分
-      "ai_prefill": "TEXT",
-      # 特殊記號選「其他」時，目擊者手寫的描述（只給飼主參考，不參與計分）
-      "special_mark_note": "TEXT",
-  })
-
-  # 3. 測試種子資料（阿凱的小黑）；照片欄位留空，不引用不存在的檔案
-  cursor.execute("SELECT COUNT(*) FROM lost_reports")
-  if cursor.fetchone()[0] == 0:
-    cursor.execute("""
-            INSERT INTO lost_reports (
-                case_code, pet_name, species, size, fur_length, accessory, accessory_color,
-                fur_color, special_mark, notes, photo_1,
-                lat_precise, lng_precise, lat_public, lng_public, privacy_radius,
-                lost_time, email, status
-            ) VALUES (
-                'LOST-0423', '小黑', '狗', '中', '短毛', '項圈', '紅色',
-                '黑/深棕', '白襪子', '親人、貪吃', '',
-                25.0260, 121.5430, 25.0263, 121.5433, 50,
-                '2026-10-01 20:30', 'owner@example.com', '尋找中'
-            )
-        """)
-
-  cursor.execute("SELECT COUNT(*) FROM sightings")
-  if cursor.fetchone()[0] == 0:
-    cursor.execute("""
-            INSERT INTO sightings (
-                species, size, fur_length, accessory, accessory_color,
-                fur_color, special_mark, photo_1,
-                lat, lng, description, sighting_time,
-                status, score, tracking_token, contact_email
-            ) VALUES (
-                '狗', '中', '短毛', '沒有', '無',
-                '黑/深棕', '看不清楚', '',
-                25.0295, 121.5360, '躲在紅色車輛車底', '2026-10-01 23:20',
-                '待確認', 0, 'token_xyz123', 'finder@example.com'
-            )
-        """)
-
-  # 4. 修正既有資料（每次啟動都跑，已修正過的資料不會再被改到）
-  #    (1) 舊資料的時間若含 T 或秒數，統一成 'YYYY-MM-DD HH:MM'
-  cursor.execute("""
-        UPDATE lost_reports SET lost_time = substr(replace(lost_time, 'T', ' '), 1, 16)
-        WHERE lost_time LIKE '%T%' OR length(lost_time) > 16
-    """)
-  cursor.execute("""
-        UPDATE sightings SET sighting_time = substr(replace(sighting_time, 'T', ' '), 1, 16)
-        WHERE sighting_time LIKE '%T%' OR length(sighting_time) > 16
-    """)
-  #    (2) 清空指向不存在檔案的種子照片
-  for table in ("lost_reports", "sightings"):
-    cursor.execute(
-        f"UPDATE {table} SET photo_1 = '' WHERE photo_1 IN (?, ?)",
-        MISSING_SEED_PHOTOS,
-    )
+  # 4. 之後新增欄位寫在這裡（Postgres 支援 IF NOT EXISTS，重複執行不會出錯），例如：
+  # cursor.execute("ALTER TABLE sightings ADD COLUMN IF NOT EXISTS new_col TEXT")
 
   conn.commit()
   conn.close()
@@ -420,7 +369,7 @@ def track_sighting(token):
                s.status, s.photo_1, l.pet_name, l.case_code, l.status AS lost_status
         FROM sightings s
         LEFT JOIN lost_reports l ON l.id = s.matched_lost_id
-        WHERE s.tracking_token = ?
+        WHERE s.tracking_token = %s
     """,
       (token,),
   )
@@ -469,7 +418,12 @@ def get_map_data():
 
 @app.route("/api/upload", methods=["POST"])
 def upload_file():
-  """通用照片上傳 API：儲存檔案至 static/uploads 並回傳路徑"""
+  """通用照片上傳 API：上傳到 Cloudinary 並回傳圖片網址。
+
+  前端只會把回傳的 file_path 存進 photo_1～photo_5，再拿來當 <img src>，
+  所以從本機路徑換成 Cloudinary 的完整網址，前端完全不用改。
+  沒設定 CLOUDINARY_URL 時退回存在本機 static/uploads（只適合本機開發）。
+  """
   if "photo" not in request.files:
     return jsonify({"error": "沒有上傳檔案"}), 400
 
@@ -481,12 +435,24 @@ def upload_file():
   if ext not in [".jpg", ".jpeg", ".png", ".webp"]:
     return jsonify({"error": "僅支援 jpg、png、webp 格式圖片"}), 400
 
-  new_filename = f"photo_{int(time.time() * 1000)}{ext}"
-  save_path = os.path.join(UPLOAD_FOLDER, new_filename)
-  file.save(save_path)
+  new_name = f"photo_{int(time.time() * 1000)}"
 
-  public_path = f"/static/uploads/{new_filename}"
-  return jsonify({"file_path": public_path})
+  if USE_CLOUDINARY:
+    try:
+      result = cloudinary.uploader.upload(
+          file.stream,
+          folder=CLOUDINARY_FOLDER,
+          public_id=new_name,
+          resource_type="image",
+      )
+    except Exception as e:  # 網路或額度問題：回傳前端看得懂的錯誤，讓使用者重試
+      print(f"[upload] Cloudinary 上傳失敗：{type(e).__name__}: {e}")
+      return jsonify({"error": "照片上傳失敗，請稍後再試"}), 502
+    return jsonify({"file_path": result["secure_url"]})
+
+  os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+  file.save(os.path.join(UPLOAD_FOLDER, new_name + ext))
+  return jsonify({"file_path": f"/static/uploads/{new_name}{ext}"})
 
 
 def calculate_public_coords(lat, lng, radius_meters):
@@ -502,7 +468,7 @@ def calculate_public_coords(lat, lng, radius_meters):
 
 @app.route("/api/lost_reports", methods=["POST"])
 def create_lost_report():
-  """接收飼主發布走失公告，寫入 SQLite"""
+  """接收飼主發布走失公告，寫入資料庫"""
   data = request.get_json()
   if not data:
     return jsonify({"error": "未收到任何資料"}), 400
@@ -544,18 +510,21 @@ def create_lost_report():
   )
   case_code = f"LOST-{random.randint(1000, 9999)}"
 
-  conn = sqlite3.connect(DB_NAME)
+  conn = get_db_connection()
   cursor = conn.cursor()
 
+  # Postgres 沒有 cursor.lastrowid，改用 RETURNING id 取回新資料的編號
   cursor.execute(
       """
         INSERT INTO lost_reports (
             case_code, pet_name, species, size, fur_length,
             accessory, accessory_color, fur_color, special_mark, special_mark_note, notes,
-            photo_1, photo_2, photo_3,
+            photo_1, photo_2, photo_3, photo_4, photo_5,
             lat_precise, lng_precise, lat_public, lng_public, privacy_radius,
             lost_time, email, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '尋找中')
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                  %s, %s, %s, %s, %s, %s, %s, '尋找中')
+        RETURNING id
     """,
       (
           case_code,
@@ -572,6 +541,8 @@ def create_lost_report():
           data.get("photo_1"),
           data.get("photo_2", ""),
           data.get("photo_3", ""),
+          data.get("photo_4", ""),
+          data.get("photo_5", ""),
           lat_precise,
           lng_precise,
           lat_public,
@@ -582,7 +553,7 @@ def create_lost_report():
       ),
   )
 
-  new_id = cursor.lastrowid
+  new_id = cursor.fetchone()["id"]
   conn.commit()
   conn.close()
 
@@ -661,10 +632,12 @@ def create_sighting():
       """
         INSERT INTO sightings (
             species, size, fur_length, accessory, accessory_color,
-            fur_color, special_mark, photo_1, photo_2, photo_3,
+            fur_color, special_mark, photo_1, photo_2, photo_3, photo_4, photo_5,
             lat, lng, description, sighting_time,
             status, score, tracking_token, contact_email, ai_prefill, special_mark_note
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '待確認', 0, ?, ?, ?, ?)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                  '待確認', 0, %s, %s, %s, %s)
+        RETURNING id
     """,
       (
           data.get("species"),
@@ -677,6 +650,8 @@ def create_sighting():
           data.get("photo_1", ""),
           data.get("photo_2", ""),
           data.get("photo_3", ""),
+          data.get("photo_4", ""),
+          data.get("photo_5", ""),
           lat,
           lng,
           (data.get("description") or "").strip(),
@@ -688,7 +663,7 @@ def create_sighting():
       ),
   )
 
-  new_sighting_id = cursor.lastrowid
+  new_sighting_id = cursor.fetchone()["id"]
   conn.commit()
 
   # 3. 反向查詢推薦：撈出所有 status = '尋找中' 的走失公告進行算分
@@ -774,7 +749,7 @@ def match_sighting(sighting_id):
 
   # 確認該通報存在
   cursor.execute(
-      "SELECT id, status FROM sightings WHERE id = ?", (sighting_id,)
+      "SELECT id, status FROM sightings WHERE id = %s", (sighting_id,)
   )
   sighting = cursor.fetchone()
   if not sighting:
@@ -788,7 +763,7 @@ def match_sighting(sighting_id):
 
   # 確認該走失公告存在
   cursor.execute(
-      "SELECT id, case_code, pet_name, email FROM lost_reports WHERE id = ?",
+      "SELECT id, case_code, pet_name, email FROM lost_reports WHERE id = %s",
       (lost_id,),
   )
   lost = cursor.fetchone()
@@ -802,10 +777,10 @@ def match_sighting(sighting_id):
   cursor.execute(
       """
         UPDATE sightings
-        SET matched_lost_id = ?,
+        SET matched_lost_id = %s,
             status = '已通知飼主',
-            score = ?
-        WHERE id = ?
+            score = %s
+        WHERE id = %s
     """,
       (lost_id, score, sighting_id),
   )
@@ -840,7 +815,7 @@ def get_lost_report(lost_id):
   """
   conn = get_db_connection()
   row = conn.execute(
-      f"SELECT {LOST_PUBLIC_FIELDS} FROM lost_reports WHERE id = ?", (lost_id,)
+      f"SELECT {LOST_PUBLIC_FIELDS} FROM lost_reports WHERE id = %s", (lost_id,)
   ).fetchone()
   conn.close()
   if not row:
@@ -868,7 +843,7 @@ def get_lost_notifications(lost_id):
       """
         SELECT species, size, fur_length, accessory, accessory_color,
                fur_color, special_mark, special_mark_note, lat_precise, lng_precise, lost_time
-        FROM lost_reports WHERE id = ?
+        FROM lost_reports WHERE id = %s
     """,
       (lost_id,),
   )
@@ -889,7 +864,7 @@ def get_lost_notifications(lost_id):
         FROM sightings
         WHERE status != '飼主已確認'
           AND id NOT IN (
-              SELECT sighting_id FROM sighting_rejections WHERE lost_id = ?
+              SELECT sighting_id FROM sighting_rejections WHERE lost_id = %s
           )
     """,
       (lost_id,),
@@ -901,7 +876,7 @@ def get_lost_notifications(lost_id):
   for row in sighting_rows:
     match_res = calculate_match(lost_obj, sighting_to_match_obj(row))
 
-    # 3. 門檛判斷：外觀分數 >= 40 就通知；但已被協尋者手動指認本案的，強制納入
+    # 3. 門檻判斷：外觀分數 >= 40 就通知；但已被協尋者手動指認本案的，強制納入
     already_picked = row["matched_lost_id"] == lost_id
     if already_picked or (
         not match_res["is_excluded"] and match_res["appearance_score"] >= NOTIFY_THRESHOLD
@@ -945,15 +920,15 @@ def get_sighting_for_lost(lost_id, sighting_id):
   """
   conn = get_db_connection()
   lost = conn.execute(
-      f"SELECT {LOST_PUBLIC_FIELDS}, lat_precise, lng_precise FROM lost_reports WHERE id = ?",
+      f"SELECT {LOST_PUBLIC_FIELDS}, lat_precise, lng_precise FROM lost_reports WHERE id = %s",
       (lost_id,),
   ).fetchone()
   sighting = conn.execute(
-      f"SELECT {SIGHTING_PUBLIC_FIELDS}, lat, lng FROM sightings WHERE id = ?",
+      f"SELECT {SIGHTING_PUBLIC_FIELDS}, lat, lng FROM sightings WHERE id = %s",
       (sighting_id,),
   ).fetchone()
   rejected = conn.execute(
-      "SELECT 1 FROM sighting_rejections WHERE lost_id = ? AND sighting_id = ?",
+      "SELECT 1 FROM sighting_rejections WHERE lost_id = %s AND sighting_id = %s",
       (lost_id, sighting_id),
   ).fetchone()
   conn.close()
@@ -1000,7 +975,7 @@ def confirm_found_pet(lost_id):
   cursor = conn.cursor()
 
   lost = cursor.execute(
-      "SELECT status FROM lost_reports WHERE id = ?", (lost_id,)
+      "SELECT status FROM lost_reports WHERE id = %s", (lost_id,)
   ).fetchone()
   if not lost:
     conn.close()
@@ -1009,27 +984,27 @@ def confirm_found_pet(lost_id):
     conn.close()
     return jsonify({"error": f"這則公告已經是「{lost['status']}」，不能重複確認"}), 409
   if sighting_id and not cursor.execute(
-      "SELECT 1 FROM sightings WHERE id = ?", (sighting_id,)
+      "SELECT 1 FROM sightings WHERE id = %s", (sighting_id,)
   ).fetchone():
     conn.close()
     return jsonify({"error": f"找不到通報 ID {sighting_id}"}), 404
 
   # 1. 將走失公告改為「已尋回」
   cursor.execute(
-      "UPDATE lost_reports SET status = '已尋回' WHERE id = ?", (lost_id,)
+      "UPDATE lost_reports SET status = '已尋回' WHERE id = %s", (lost_id,)
   )
 
   # 2. 若有指定被確認的通報 ID，將其改為「飼主已確認」
   if sighting_id:
     cursor.execute(
-        "UPDATE sightings SET status = '飼主已確認', matched_lost_id = ? WHERE"
-        " id = ?",
+        "UPDATE sightings SET status = '飼主已確認', matched_lost_id = %s WHERE"
+        " id = %s",
         (lost_id, sighting_id),
     )
   else:
     # 若未指定特定通報，將所有關聯該公告的通報皆更新
     cursor.execute(
-        "UPDATE sightings SET status = '飼主已確認' WHERE matched_lost_id = ?",
+        "UPDATE sightings SET status = '飼主已確認' WHERE matched_lost_id = %s",
         (lost_id,),
     )
 
@@ -1063,20 +1038,23 @@ def reject_sighting(lost_id):
 
   conn = get_db_connection()
   cursor = conn.cursor()
-  if not cursor.execute("SELECT 1 FROM lost_reports WHERE id = ?", (lost_id,)).fetchone():
+  if not cursor.execute("SELECT 1 FROM lost_reports WHERE id = %s", (lost_id,)).fetchone():
     conn.close()
     return jsonify({"error": f"找不到走失公告 ID {lost_id}"}), 404
-  if not cursor.execute("SELECT 1 FROM sightings WHERE id = ?", (sighting_id,)).fetchone():
+  if not cursor.execute("SELECT 1 FROM sightings WHERE id = %s", (sighting_id,)).fetchone():
     conn.close()
     return jsonify({"error": f"找不到通報 ID {sighting_id}"}), 404
 
-  # INSERT OR IGNORE：重複按也只會有一筆紀錄
+  # ON CONFLICT DO NOTHING（取代 SQLite 的 INSERT OR IGNORE）：重複按也只會有一筆紀錄
   cursor.execute(
-      "INSERT OR IGNORE INTO sighting_rejections (lost_id, sighting_id) VALUES (?, ?)",
+      """
+        INSERT INTO sighting_rejections (lost_id, sighting_id) VALUES (%s, %s)
+        ON CONFLICT (lost_id, sighting_id) DO NOTHING
+    """,
       (lost_id, sighting_id),
   )
   cursor.execute(
-      "UPDATE sightings SET status = '飼主已排除' WHERE id = ? AND status != '飼主已確認'",
+      "UPDATE sightings SET status = '飼主已排除' WHERE id = %s AND status != '飼主已確認'",
       (sighting_id,),
   )
   conn.commit()

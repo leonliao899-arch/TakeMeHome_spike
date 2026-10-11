@@ -15,7 +15,7 @@
     }
     .top-bar a { color: #2563eb; text-decoration: none; font-weight: bold; font-size: 14px; }
     h3 { font-size: 16px; color: #1e3a8a; margin: 20px 0 10px; }
- 
+
     /* 最上方：距離與距今多久 */
     .headline {
       margin-top: 12px; padding: 14px; border-radius: 10px; background: #eff6ff;
@@ -30,7 +30,7 @@
       display: block; text-align: center; font-size: 13px; font-weight: bold; color: #92400e;
       background: #fde68a; border-radius: 8px; padding: 4px 8px; margin-top: 8px;
     }
- 
+
     /* 照片並排：左邊目擊照、右邊飼主原照，各自主圖＋縮圖列 */
     .photo-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .photo-col .col-title { font-size: 13px; font-weight: bold; color: #475569; margin-bottom: 4px; }
@@ -39,13 +39,13 @@
       background: #f1f5f9; display: flex; align-items: center; justify-content: center;
       font-size: 34px; color: #94a3b8;
     }
-    .thumbs { display: flex; gap: 6px; margin-top: 6px; }
+    .thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
     .thumbs img {
-      width: 44px; height: 44px; object-fit: cover; border-radius: 6px; cursor: pointer;
+      width: 40px; height: 40px; object-fit: cover; border-radius: 6px; cursor: pointer;
       border: 2px solid transparent; opacity: 0.7;
     }
     .thumbs img.active { border-color: #2563eb; opacity: 1; }
- 
+
     /* 特徵並排 */
     .compare { border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden; font-size: 14px; }
     .cmp-head, .cmp-row {
@@ -62,7 +62,7 @@
     .st-partial, .st-maybe { background: #fffbeb; }
     .st-unclear { background: #f8fafc; }
     .st-diff { background: #fef2f2; }
- 
+
     #spotMap { height: 230px; border-radius: 8px; border: 1px solid #cbd5e1; z-index: 0; }
     .map-legend-row { font-size: 12px; color: #64748b; margin-top: 6px; }
     .map-legend-row span { margin-right: 12px; }
@@ -75,7 +75,7 @@
       background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 12px;
       font-size: 15px;
     }
- 
+
     /* 底部按鈕 */
     .actions { margin-top: 24px; display: flex; flex-direction: column; gap: 10px; }
     .report-hint { font-size: 14px; color: #475569; text-align: center; }
@@ -85,7 +85,7 @@
     .btn-yes { background: #16a34a; color: #fff; border: none; }
     .btn-no { background: #fff; color: #475569; border: 1px solid #cbd5e1; }
     button:disabled { opacity: 0.55; cursor: not-allowed; }
- 
+
     .result {
       text-align: center; border-radius: 10px; padding: 18px; margin-top: 20px; font-weight: bold;
     }
@@ -93,7 +93,7 @@
     .result.found { background: #dcfce7; color: #166534; }
     .result.rejected { background: #f1f5f9; color: #475569; }
     .result a { display: inline-block; margin-top: 10px; color: #2563eb; }
- 
+
     /* 自製確認彈窗（與表單同一套樣式） */
     .modal-overlay {
       display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
@@ -113,7 +113,7 @@
 <body>
   <div class="top-bar"><a href="/case/{{ lost_id }}">⬅ 回到通知清單</a></div>
   <div id="content"><div style="text-align:center; padding:40px 0; color:#64748b;">⏳ 載入中…</div></div>
- 
+
   <div class="modal-overlay" id="modal">
     <div class="modal-card">
       <h3 id="modalTitle"></h3>
@@ -124,20 +124,20 @@
       </div>
     </div>
   </div>
- 
+
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     const LOST_ID = {{ lost_id }};
     const SIGHTING_ID = {{ sighting_id }};
     const STATUS_ICON = { match: '✅', partial: '🟡', maybe: '🟡', unclear: '❔', diff: '❌' };
- 
+
     function el(tag, className, text) {
       const e = document.createElement(tag);
       if (className) e.className = className;
       if (text !== undefined) e.textContent = text;
       return e;
     }
- 
+
     function timeAgo(text) {
       const t = new Date(String(text).replace(' ', 'T'));
       if (isNaN(t)) return '—';
@@ -148,11 +148,11 @@
       if (hours < 24) return `${hours} 小時前`;
       return `${Math.round(hours / 24)} 天前`;
     }
- 
+
     function formatKm(km) {
       return km < 1 ? `${Math.round(km * 1000)} 公尺` : `${km} 公里`;
     }
- 
+
     // 一欄照片：主圖＋縮圖列（點縮圖切換主圖）
     function photoColumn(title, paths) {
       const col = el('div', 'photo-col');
@@ -183,7 +183,7 @@
       }
       return col;
     }
- 
+
     async function load() {
       const box = document.getElementById('content');
       try {
@@ -199,12 +199,12 @@
         box.innerHTML = '<div class="error">❌ 載入失敗，請檢查網路後重新整理。</div>';
       }
     }
- 
+
     function render(d) {
       const { lost, sighting, match } = d;
       const box = document.getElementById('content');
       box.innerHTML = '';
- 
+
       // 1. 最上方：距離與距今多久
       const head = el('div', 'headline');
       const row = el('div', 'row');
@@ -219,14 +219,14 @@
       head.appendChild(el('div', 'level', `${match.match_level}・外觀 ${match.appearance_score} 分`));
       if (d.manually_confirmed) head.appendChild(el('div', 'picked-tag', '⭐ 協尋者看過你的公告，指認就是這隻'));
       box.appendChild(head);
- 
+
       // 2. 照片並排
       box.appendChild(el('h3', '', '📷 照片比對'));
       const cols = el('div', 'photo-cols');
-      cols.appendChild(photoColumn('目擊照片', [sighting.photo_1, sighting.photo_2, sighting.photo_3]));
-      cols.appendChild(photoColumn(`你的${lost.pet_name || '寶貝'}`, [lost.photo_1, lost.photo_2, lost.photo_3]));
+      cols.appendChild(photoColumn('目擊照片', [sighting.photo_1, sighting.photo_2, sighting.photo_3, sighting.photo_4, sighting.photo_5]));
+      cols.appendChild(photoColumn(`你的${lost.pet_name || '寶貝'}`, [lost.photo_1, lost.photo_2, lost.photo_3, lost.photo_4, lost.photo_5]));
       box.appendChild(cols);
- 
+
       // 3. 特徵並排
       box.appendChild(el('h3', '', '🔍 特徵比對'));
       const table = el('div', 'compare');
@@ -243,7 +243,7 @@
         table.appendChild(r);
       });
       box.appendChild(table);
- 
+
       // 4. 目擊位置描述
       // 4. 目擊地點：小地圖＋導航按鈕＋發現環境（飼主前往現場確認，就是 O2O 的關鍵一步）
       box.appendChild(el('h3', '', '📍 目擊地點'));
@@ -254,23 +254,23 @@
       legend.appendChild(el('span', '', '🔵 目擊地點'));
       legend.appendChild(el('span', '', '🔴 你的走失地點（公開模糊位置）'));
       box.appendChild(legend);
- 
+
       const sLat = Number(sighting.lat), sLng = Number(sighting.lng);
       const nav = el('a', 'nav-btn', '🧭 前往目擊地點確認（Google 地圖導航）');
       nav.href = `https://www.google.com/maps/dir/?api=1&destination=${sLat},${sLng}`;
       nav.target = '_blank';
       nav.rel = 'noopener';
       box.appendChild(nav);
- 
+
       box.appendChild(el('div', 'desc-label', '發現環境'));
       box.appendChild(el('div', 'desc-box', sighting.description || '協尋者沒有填寫發現環境'));
       drawSpotMap(sLat, sLng, Number(lost.lat_public), Number(lost.lng_public));
- 
+
       // 5. 操作按鈕（依狀態決定要不要顯示）
       const actions = el('div');
       actions.id = 'actions';
       box.appendChild(actions);
- 
+
       if (lost.status !== '尋找中') {
         showResult(lost.status === '已尋回' ? 'found' : 'rejected',
           lost.status === '已尋回' ? `${lost.pet_name || '寶貝'}已經回家了！這則公告已結案。` : `這則公告目前是「${lost.status}」。`);
@@ -293,7 +293,7 @@
         actions.appendChild(wrap);
       }
     }
- 
+
     // 地圖上同時標出目擊點與走失點，縮放到兩點都看得到
     function drawSpotMap(sLat, sLng, lLat, lLng) {
       try {
@@ -315,7 +315,7 @@
         document.getElementById('spotMap').textContent = '地圖載入失敗，可以用下方按鈕開啟 Google 地圖。';
       }
     }
- 
+
     function showResult(kind, text) {
       const actions = document.getElementById('actions');
       actions.innerHTML = '';
@@ -327,7 +327,7 @@
       r.appendChild(link);
       actions.appendChild(r);
     }
- 
+
     // 自製確認彈窗
     let modalAction = null;
     function openModal(title, text, okText, okClass, action) {
@@ -346,7 +346,7 @@
       await modalAction();
       closeModal();
     };
- 
+
     async function postJson(url) {
       const res = await fetch(url, {
         method: 'POST',
@@ -357,7 +357,7 @@
       if (!res.ok) throw new Error(data.error || '操作失敗');
       return data;
     }
- 
+
     async function confirmFound() {
       try {
         await postJson(`/api/lost_reports/${LOST_ID}/confirm_found`);
@@ -366,7 +366,7 @@
         alert('❌ ' + err.message);
       }
     }
- 
+
     async function rejectSighting() {
       try {
         await postJson(`/api/lost_reports/${LOST_ID}/reject_sighting`);
@@ -375,7 +375,7 @@
         alert('❌ ' + err.message);
       }
     }
- 
+
     load();
   </script>
 </body>

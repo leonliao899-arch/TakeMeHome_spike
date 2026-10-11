@@ -119,7 +119,36 @@
       font-size: 14px; font-weight: bold; line-height: 1.6;
     }
     .photo-guard.show { display: block; }
-    input[type="file"].input-error { padding: 4px; border-radius: 4px; }
+
+    /* ===== 第二步：照片格（與協尋者通報表單相同：前端壓縮＋預覽＋單張刪除） ===== */
+    .photo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .photo-slot {
+      position: relative; aspect-ratio: 1 / 1; border-radius: 8px;
+      overflow: hidden; background: #f8fafc; border: 1px solid #e2e8f0;
+    }
+    .photo-slot.bad { outline: 3px solid #dc2626; outline-offset: -3px; }
+    .photo-slot img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .photo-slot .size-tag {
+      position: absolute; left: 0; right: 0; bottom: 0; font-size: 10px;
+      color: #fff; background: rgba(0,0,0,0.55); text-align: center; padding: 1px 0;
+    }
+    .photo-slot .main-tag {
+      position: absolute; top: 4px; left: 4px; font-size: 11px; font-weight: bold;
+      color: #fff; background: #dc2626; border-radius: 4px; padding: 0 5px;
+    }
+    .photo-slot .remove-btn {
+      position: absolute; top: 4px; right: 4px; width: 26px; height: 26px;
+      border-radius: 50%; border: none; background: rgba(0,0,0,0.6);
+      color: #fff; font-size: 15px; line-height: 26px; padding: 0; cursor: pointer;
+    }
+    .add-slot {
+      aspect-ratio: 1 / 1; border: 2px dashed #93c5fd; border-radius: 8px;
+      background: #eff6ff; color: #1d4ed8; font-size: 13px; font-weight: bold;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      cursor: pointer; text-align: center; padding: 4px;
+    }
+    .add-slot .icon { font-size: 26px; }
+    .photo-count { font-size: 13px; color: #64748b; margin-top: 6px; }
 
     /* 自製確認摘要 Modal 彈窗樣式 */
     .modal-overlay {
@@ -256,34 +285,19 @@
 
     <!-- ===== Step 2: 寵物照片（移到外觀特徵之前，讓 AI 先看照片再預填） ===== -->
     <div class="step-section" id="step-2">
-      <h3>第二步：寵物照片 (1 必填 + 2 選填)</h3>
+      <h3>第二步：寵物照片（1～5 張）</h3>
 
       <div class="ai-hint">
-        🤖 上傳照片後按「下一步」，AI 會先看照片，幫你預填下一頁的毛色、配件與特殊記號。
-        特寫照越清楚，預填越準。
+        📷 第 1 張請放<strong>清楚的全身照</strong>（地圖和比對會用它當主照片），其他可以放特殊記號、配件的特寫。<br>
+        🤖 按「下一步」後，AI 會先檢查照片，並幫你預填下一頁的毛色、配件與特殊記號。
       </div>
 
-      <div class="form-group">
-        <label>第 1 張：全身照<span class="required">*必填</span></label>
-        <input type="file" id="photo_1" accept="image/*" onchange="previewImage(this, 'preview_1')">
-        <div class="tag">標籤：全身 (供比對體型與主要毛色)</div>
-        <div id="photo1-error" class="error-text">請務必上傳第 1 張全身照！</div>
-        <img id="preview_1" class="img-preview" alt="預覽圖1">
-      </div>
-
-      <div class="form-group">
-        <label>第 2 張：特徵照 (選填)</label>
-        <input type="file" id="photo_2" accept="image/*" onchange="previewImage(this, 'preview_2')">
-        <div class="tag">標籤：特殊記號特寫 (如白襪子、色塊)</div>
-        <img id="preview_2" class="img-preview" alt="預覽圖2">
-      </div>
-
-      <div class="form-group">
-        <label>第 3 張：特徵照 (選填)</label>
-        <input type="file" id="photo_3" accept="image/*" onchange="previewImage(this, 'preview_3')">
-        <div class="tag">標籤：配件特寫 (如項圈、名牌)</div>
-        <img id="preview_3" class="img-preview" alt="預覽圖3">
-      </div>
+      <div class="photo-grid" id="photoGrid"></div>
+      <!-- 隱藏的檔案選擇器：手機會跳出「拍照／照片圖庫」選單 -->
+      <input type="file" id="photoInput" accept="image/*" multiple style="display:none"
+             onchange="handlePhotoSelect(this)">
+      <div class="photo-count" id="photoCount">已選 0 / 5 張（至少 1 張）</div>
+      <div id="photo1-error" class="error-text">請至少上傳 1 張照片（第 1 張建議為全身照）！</div>
 
       <div class="btn-group">
         <button type="button" onclick="prevStep(1)">⬅ 上一步</button>
@@ -300,7 +314,7 @@
       <div id="ai-banner" class="ai-banner"></div>
 
       <div class="form-group">
-        <label>走失時的身上的配件<span class="required">*</span>：<span class="ai-badge" id="ai-badge-accessory">🤖 AI 預填</span></label>
+        <label>配件<span class="required">*</span>：<span class="ai-badge" id="ai-badge-accessory">🤖 AI 預填</span></label>
         <select id="accessory" onchange="toggleAccessoryColor()">
           <option value="">-- 請選擇是否有配件 --</option>
           <option value="沒有">沒有</option>
@@ -522,36 +536,121 @@
     let lastAnalyzedKey = null;     // 照片沒換就不重複呼叫 AI（省錢）
     let guardFailKey = null;        // 防呆沒通過的那組照片：沒換照片就不能往下走
     let guardFailMessage = '';
-    const PHOTO_IDS = ['photo_1', 'photo_2', 'photo_3'];
+
+    // ==========================================
+    // 📷 照片：選照片 → 前端用 canvas 壓縮（長邊 1280px、JPEG 80%）→ 預覽
+    // 與協尋者通報表單相同做法：上傳流量從數 MB 降到約 200KB，iPhone 的 HEIC 也會轉成 JPEG
+    // ==========================================
+    const MAX_PHOTOS = 5;
+    const MAX_SIDE = 1280;
+    const JPEG_QUALITY = 0.8;
+    let photos = [];   // { blob: 壓縮後的 JPEG, url: 預覽網址, origSize: 原檔大小, bad: 防呆標記 }
+
+    function formatBytes(n) {
+      return n >= 1024 * 1024 ? (n / 1024 / 1024).toFixed(1) + 'MB' : Math.round(n / 1024) + 'KB';
+    }
+
+    function compressImage(file) {
+      return new Promise((resolve, reject) => {
+        const srcUrl = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+          const scale = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.round(img.naturalWidth * scale);
+          canvas.height = Math.round(img.naturalHeight * scale);
+          canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+          URL.revokeObjectURL(srcUrl);
+          canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('壓縮失敗')),
+                        'image/jpeg', JPEG_QUALITY);
+        };
+        img.onerror = () => { URL.revokeObjectURL(srcUrl); reject(new Error('無法讀取')); };
+        img.src = srcUrl;
+      });
+    }
+
+    function setPhotoError(text) {
+      const err = document.getElementById('photo1-error');
+      if (text) { err.textContent = text; err.style.display = 'block'; }
+      else { err.style.display = 'none'; }
+    }
+
+    async function handlePhotoSelect(input) {
+      const files = Array.from(input.files || []);
+      input.value = '';   // 清空，讓同一張照片刪掉後還能再選
+      if (files.length === 0) return;
+
+      hidePhotoGuard();   // 換了照片，上一次的防呆結果不再適用
+      const room = MAX_PHOTOS - photos.length;
+      setPhotoError(files.length > room ? `最多 ${MAX_PHOTOS} 張，已幫你保留前 ${room} 張` : '');
+
+      const btn = document.getElementById('photo-next-btn');
+      btn.disabled = true;
+      document.getElementById('photoCount').textContent = '⏳ 照片處理中…';
+      for (const file of files.slice(0, room)) {
+        try {
+          const blob = await compressImage(file);
+          photos.push({ blob, url: URL.createObjectURL(blob), origSize: file.size, bad: false });
+        } catch (err) {
+          setPhotoError('有一張照片無法讀取，請換一張（建議 jpg 或 png）');
+        }
+      }
+      btn.disabled = false;
+      renderPhotos();
+    }
+
+    function removePhoto(index) {
+      URL.revokeObjectURL(photos[index].url);
+      photos.splice(index, 1);
+      setPhotoError('');
+      hidePhotoGuard();
+      renderPhotos();
+    }
+
+    function renderPhotos() {
+      const grid = document.getElementById('photoGrid');
+      grid.innerHTML = '';
+      photos.forEach((p, i) => {
+        const slot = document.createElement('div');
+        slot.className = 'photo-slot' + (p.bad ? ' bad' : '');
+        slot.innerHTML = `<img alt="寵物照片 ${i + 1}">
+          ${i === 0 ? '<div class="main-tag">主照片</div>' : ''}
+          <div class="size-tag"></div>
+          <button type="button" class="remove-btn" aria-label="刪除這張">×</button>`;
+        slot.querySelector('img').src = p.url;
+        slot.querySelector('.size-tag').textContent =
+          `${formatBytes(p.origSize)} → ${formatBytes(p.blob.size)}`;
+        slot.querySelector('.remove-btn').onclick = () => removePhoto(i);
+        grid.appendChild(slot);
+      });
+      if (photos.length < MAX_PHOTOS) {
+        const add = document.createElement('div');
+        add.className = 'add-slot';
+        add.innerHTML = `<span class="icon">📷</span>${photos.length === 0 ? '拍照 / 選照片' : '再加一張'}`;
+        add.onclick = () => document.getElementById('photoInput').click();
+        grid.appendChild(add);
+      }
+      document.getElementById('photoCount').textContent =
+        `已選 ${photos.length} / ${MAX_PHOTOS} 張（至少 1 張）`;
+    }
+    renderPhotos();   // 一進頁面先畫出「拍照 / 選照片」格子
 
     // ==========================================
     // 🛡️ 照片防呆：AI 判斷「沒有貓狗」或「不是同一隻」時擋在第二步
     // ==========================================
-    function showPhotoGuard(message, badInputIds) {
+    // badIndexes：有問題的照片（從 0 開始），會加紅框；飼主按照片右上角的 × 就能刪掉
+    function showPhotoGuard(message, badIndexes) {
+      photos.forEach((p, i) => p.bad = badIndexes.includes(i));
+      renderPhotos();
       const box = document.getElementById('photo-guard');
-      box.textContent = '🛡️ ' + message;
+      box.textContent = '🛡️ ' + message + ' 可以按紅框照片右上角的 × 刪掉，再重新上傳。';
       box.classList.add('show');
-      PHOTO_IDS.forEach(id => document.getElementById(id).classList.toggle('input-error', badInputIds.includes(id)));
-      // 有問題的是選填照片（第 2、3 張）時，提供一鍵移除，不必非得換一張
-      badInputIds.filter(id => id !== 'photo_1').forEach(id => {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.style.cssText = 'display:block; margin-top:8px; font-size:13px;';
-        btn.textContent = `🗑 移除第 ${id.slice(-1)} 張`;
-        btn.onclick = () => {
-          const input = document.getElementById(id);
-          input.value = '';
-          previewImage(input, 'preview_' + id.slice(-1));
-          hidePhotoGuard();
-        };
-        box.appendChild(btn);
-      });
       box.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
     function hidePhotoGuard() {
       document.getElementById('photo-guard').classList.remove('show');
-      PHOTO_IDS.forEach(id => document.getElementById(id).classList.remove('input-error'));
+      photos.forEach(p => p.bad = false);
     }
 
     // 使用者手動改欄位 → 拿掉 AI 標記，並記住「這格是使用者自己選的」
@@ -596,10 +695,7 @@
     }
 
     function photosKey() {
-      return ['photo_1', 'photo_2', 'photo_3'].map(id => {
-        const f = document.getElementById(id).files[0];
-        return f ? `${f.name}:${f.size}:${f.lastModified}` : '-';
-      }).join('|');
+      return photos.map(p => `${p.blob.size}:${p.url}`).join('|');
     }
 
     function applyAiResult(result) {
@@ -638,19 +734,15 @@
     }
 
     async function validatePhotosAndAnalyze() {
-      const photo1 = document.getElementById('photo_1');
-      const errText = document.getElementById('photo1-error');
-
-      if (!photo1.files || photo1.files.length === 0) {
-        errText.style.display = 'block';
-        alert("【必填提示】請至少上傳第 1 張全身照！");
+      if (photos.length === 0) {
+        setPhotoError('請至少上傳 1 張照片（第 1 張建議為全身照）！');
         return;
       }
-      errText.style.display = 'none';
+      setPhotoError('');
 
       const key = photosKey();
       if (key === guardFailKey) {      // 照片沒換，防呆仍不通過
-        showPhotoGuard(guardFailMessage, []);
+        showPhotoGuard(guardFailMessage, photos.map((p, i) => p.bad ? i : -1).filter(i => i >= 0));
         return;
       }
       if (key === lastAnalyzedKey) {   // 照片沒變，直接下一步
@@ -664,16 +756,15 @@
       status.style.color = '#2563eb';
       status.textContent = '🤖 AI 正在檢查照片並辨識毛色、配件與特殊記號…';
       hidePhotoGuard();
+      renderPhotos();
 
-      // 實際送出的照片欄位（例如只有第 1、3 張），AI 回傳的「第幾張」要對應回這裡
-      const sentIds = PHOTO_IDS.filter(id => document.getElementById(id).files[0]);
       let proceed = true;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 20000);   // 最多等 20 秒
 
       try {
         const formData = new FormData();
-        sentIds.forEach(id => formData.append(id, document.getElementById(id).files[0]));
+        photos.forEach((p, i) => formData.append(`photo_${i + 1}`, p.blob, `photo_${i + 1}.jpg`));
 
         const res = await fetch('/api/analyze-photo', { method: 'POST', body: formData, signal: controller.signal });
         const data = await res.json().catch(() => ({}));
@@ -683,8 +774,11 @@
           proceed = false;
           guardFailKey = key;
           guardFailMessage = data.guard.message;
-          const badIds = (data.guard.no_pet_photos || []).map(n => sentIds[n - 1]).filter(Boolean);
-          showPhotoGuard(data.guard.message, data.guard.mismatch ? sentIds : badIds);
+          // AI 回傳的是「第幾張」（從 1 開始）；不是同一隻時，所有照片都標紅框
+          const badIndexes = data.guard.mismatch
+            ? photos.map((p, i) => i)
+            : (data.guard.no_pet_photos || []).map(n => n - 1).filter(i => i >= 0 && i < photos.length);
+          showPhotoGuard(data.guard.message, badIndexes);
         } else if (res.ok) {
           applyAiResult(data);
           lastAnalyzedKey = key;
@@ -830,42 +924,17 @@
       );
     }
 
-    function previewImage(inputElement, previewImgId) {
-      const img = document.getElementById(previewImgId);
-      const photo1Err = document.getElementById('photo1-error');
-      inputElement.classList.remove('input-error');
-      if (inputElement.files && inputElement.files[0]) {
-        img.src = URL.createObjectURL(inputElement.files[0]);
-        img.style.display = 'block';
-        if (inputElement.id === 'photo_1' && photo1Err) {
-          photo1Err.style.display = 'none';
-        }
-      } else {
-        img.src = '';
-        img.style.display = 'none';
-      }
-    }
-
-    async function uploadSinglePhoto(fileInputId) {
-      const fileInput = document.getElementById(fileInputId);
-      if (!fileInput.files || fileInput.files.length === 0) return '';
-
+    // 上傳一張壓縮後的照片，回傳伺服器上的路徑
+    async function uploadPhoto(blob) {
       const formData = new FormData();
-      formData.append('photo', fileInput.files[0]);
-
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData
-      });
-      if (res.ok) {
-        const data = await res.json();
-        return data.file_path;
-      }
-      return '';
+      formData.append('photo', blob, 'lost.jpg');   // 壓縮後一律是 JPEG
+      const res = await fetch('/api/upload', { method: 'POST', body: formData });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.file_path) throw new Error(data.error || '照片上傳失敗');
+      return data.file_path;
     }
 
     function openSummaryModal() {
-      const photo1 = document.getElementById('photo_1').files[0];
       const lat = document.getElementById('lat').value;
       const lng = document.getElementById('lng').value;
       const lostTime = document.getElementById('lost_time').value;
@@ -875,8 +944,8 @@
       document.getElementById('time-error').style.display = 'none';
       document.getElementById('email-error').style.display = 'none';
 
-      if (!photo1) {
-        alert("【必填攔截】第 1 張全身照為必填項目！");
+      if (photos.length === 0) {
+        alert("【必填攔截】請至少上傳 1 張照片！");
         showStep(2);
         return;
       }
@@ -913,10 +982,7 @@
       const markText = (mark === '其他' && markNoteText) ? `其他（${markNoteText}）` : mark;
       const notes = document.getElementById('notes').value.trim() || '無';
 
-      const p1 = document.getElementById('photo_1').files.length > 0;
-      const p2 = document.getElementById('photo_2').files.length > 0;
-      const p3 = document.getElementById('photo_3').files.length > 0;
-      const photoCount = [p1, p2, p3].filter(Boolean).length;
+      const photoCount = photos.length;
 
       const formattedTime = lostTime.replace('T', ' ');
       const privacyRadius = document.querySelector('input[name="privacy_radius"]:checked').value;
@@ -928,7 +994,7 @@
         <div class="summary-item"><span class="summary-label">配件特徵</span><span class="summary-val">${accText}</span></div>
         <div class="summary-item"><span class="summary-label">特殊記號</span><span class="summary-val">${markText}</span></div>
         <div class="summary-item"><span class="summary-label">備註描述</span><span class="summary-val">${notes}</span></div>
-        <div class="summary-item"><span class="summary-label">照片張數</span><span class="summary-val">${photoCount} 張 (全身照必填)</span></div>
+        <div class="summary-item"><span class="summary-label">照片張數</span><span class="summary-val">${photoCount} 張</span></div>
         <div class="summary-item"><span class="summary-label">走失座標</span><span class="summary-val">${lat}, ${lng}</span></div>
         <div class="summary-item"><span class="summary-label">隱私模糊</span><span class="summary-val">偏移 ${privacyRadius} 公尺</span></div>
         <div class="summary-item"><span class="summary-label">走失時間</span><span class="summary-val">${formattedTime}</span></div>
@@ -964,9 +1030,8 @@
       statusBox.innerText = "⏳ 正在上傳照片並建立走失公告...";
 
       try {
-        const photoPath1 = await uploadSinglePhoto('photo_1');
-        const photoPath2 = await uploadSinglePhoto('photo_2');
-        const photoPath3 = await uploadSinglePhoto('photo_3');
+        const paths = [];
+        for (const p of photos) paths.push(await uploadPhoto(p.blob));
 
         const privacyRadius = document.querySelector('input[name="privacy_radius"]:checked').value;
         const notes = document.getElementById('notes').value.trim();
@@ -983,9 +1048,11 @@
           special_mark_note: document.getElementById('special_mark').value === '其他'
             ? document.getElementById('special_mark_note').value.trim() : '',
           notes: notes,
-          photo_1: photoPath1,
-          photo_2: photoPath2,
-          photo_3: photoPath3,
+          photo_1: paths[0] || '',
+          photo_2: paths[1] || '',
+          photo_3: paths[2] || '',
+          photo_4: paths[3] || '',
+          photo_5: paths[4] || '',
           lat: document.getElementById('lat').value,
           lng: document.getElementById('lng').value,
           privacy_radius: privacyRadius,
@@ -1012,7 +1079,7 @@
             <a href="/case/${result.id}" style="display:block; padding:12px; background:#2563eb; color:#fff; border-radius:6px; text-decoration:none;">🔔 查看我的案件通知</a>
             <div style="font-size:12px; color:#64748b; margin-top:6px;">請把案件頁加入書籤，之後有人通報才找得到</div>
             <br>
-            <a href="/" style="color: #2563eb; font-weight: bold; text-decoration: underline;">👉 返回地圖查看紅色新圖釘</a>
+            <a href="/?focus=lost-${result.id}" style="color: #2563eb; font-weight: bold; text-decoration: underline;">👉 回到地圖看我的公告</a>
           `;
         } else {
           statusBox.style.color = '#dc2626';
@@ -1020,7 +1087,7 @@
         }
       } catch (err) {
         statusBox.style.color = '#dc2626';
-        statusBox.innerText = "❌ 發生連線錯誤，請檢查後端是否正常運行";
+        statusBox.innerText = `❌ ${err.message && err.message !== 'Failed to fetch' ? err.message : '發生連線錯誤，請檢查網路後再試一次'}`;
       }
     }
   </script>

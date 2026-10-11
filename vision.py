@@ -117,7 +117,7 @@ RESPONSE_SCHEMA = {
     },
 }
 
-SYSTEM_PROMPT = f"""你是走失寵物協尋平台的照片辨識助手。使用者會上傳 1 到 3 張同一隻寵物的照片，
+SYSTEM_PROMPT = f"""你是走失寵物協尋平台的照片辨識助手。使用者會上傳 1 到 5 張同一隻寵物的照片，
 可能是飼主拍的清楚照片，也可能是路人匆忙遠拍、夜間拍攝、動物躲在車底等品質較差的照片。
 請綜合所有照片，只依照「照片中看得到的內容」填寫欄位，每個欄位只能從給定選項中選一個。
 
@@ -351,7 +351,7 @@ vision_bp = Blueprint("vision", __name__)
 
 @vision_bp.route("/api/analyze-photo", methods=["POST"])
 def analyze_photo():
-  """接收表單照片（photo_1 必填、photo_2/photo_3 選填），回傳 AI 預填建議。
+  """接收表單照片（photo_1 必填、photo_2～photo_5 選填），回傳 AI 預填建議。
 
   照片不在這裡存檔，只用來辨識；正式送出時仍走原本的 /api/upload。
   """
@@ -359,7 +359,7 @@ def analyze_photo():
     return jsonify({"error": "請至少提供第 1 張照片"}), 400
 
   data_urls = []
-  for key in ("photo_1", "photo_2", "photo_3"):
+  for key in ("photo_1", "photo_2", "photo_3", "photo_4", "photo_5"):
     f = request.files.get(key)
     if not f or f.filename == "":
       continue
