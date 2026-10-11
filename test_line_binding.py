@@ -22,6 +22,8 @@ os.environ["LINE_CHANNEL_SECRET"] = TEST_SECRET
 os.environ["LINE_CHANNEL_ACCESS_TOKEN"] = "test-access-token"
 os.environ["LINE_BOT_BASIC_ID"] = "@123abcde"
 os.environ["PUBLIC_BASE_URL"] = "https://takemehome-spike.onrender.com"
+# 測試時 webhook 改成同步處理，送出後就能立刻檢查資料庫（正式環境是先回 200 再背景處理）
+os.environ["LINE_WEBHOOK_SYNC"] = "1"
 
 import app as app_module  # noqa: E402  （會執行 init_db，補上新欄位與索引）
 
@@ -70,12 +72,13 @@ def send_webhook(events, secret=TEST_SECRET, signature=None):
                      headers={"X-Line-Signature": sig, "Content-Type": "application/json"})
 
 
-def text_event(text, user_id="U_test_user_A", source_type="user", redelivery=False):
+def text_event(text, user_id="U_test_user_A", source_type="user", redelivery=False, event_id=None):
   source = {"type": source_type, "userId": user_id}
   if source_type == "group":
     source["groupId"] = "C_test_group"
   return {
       "type": "message",
+      "webhookEventId": event_id or ("TEST" + uuid.uuid4().hex),
       "replyToken": "test-reply-token",
       "source": source,
       "deliveryContext": {"isRedelivery": redelivery},
@@ -219,9 +222,41 @@ try:
   check("LINE 重送的事件不用 reply，直接 push",
         len(line_calls) == 1 and line_calls[0]["url"].endswith("/push"))
 
+  # 去重：同一個 webhookEventId 再送一次（LINE 重送），不能再綁定、不能再回覆
+  dup_id = "TEST" + uuid.uuid4().hex
+  line_calls.clear()
+  send_webhook([text_event(f"綁定 {owner_token}", user_id="U_dup_first", event_id=dup_id)])
+  first_calls = len(line_calls)
+  send_webhook([text_event(f"綁定 {owner_token}", user_id="U_dup_second", event_id=dup_id, redelivery=True)])
+  send_webhook([text_event(f"綁定 {owner_token}", user_id="U_dup_third", event_id=dup_id, redelivery=True)])
+  owner_now = db_value("SELECT line_user_id FROM lost_reports WHERE id = %s", (d1["id"],))["line_user_id"]
+  check("同一個事件重送 2 次：只回覆 1 次", first_calls == 1 and len(line_calls) == 1, len(line_calls))
+  check("同一個事件重送：綁定結果不被重送的內容改掉", owner_now == "U_dup_first", owner_now)
+
+  # 先回 200 再處理：LINE API 故意卡 2 秒，webhook 仍要立刻回應
+  import threading
+  import time as _time
+  slow_done = threading.Event()
+  def slow_post(url, json=None, headers=None, timeout=None):
+    _time.sleep(2)
+    line_calls.append({"url": url, "json": json, "headers": headers})
+    slow_done.set()
+    return FakeResp(200)
+  app_module.requests.post = slow_post
+  app_module.LINE_WEBHOOK_SYNC = False
+  t0 = _time.time()
+  r = send_webhook([text_event(f"綁定 {owner_token}", user_id="U_async")])
+  elapsed = _time.time() - t0
+  app_module.LINE_WEBHOOK_SYNC = True
+  check("webhook 不等處理完就回 200（< 1 秒）", r.status_code == 200 and elapsed < 1, f"{elapsed:.2f}s")
+  check("背景處理仍會完成綁定並回覆", slow_done.wait(10) and
+        db_value("SELECT line_user_id FROM lost_reports WHERE id = %s", (d1["id"],))["line_user_id"] == "U_async")
+  app_module.requests.post = fake_post
+
   # 加好友
   line_calls.clear()
-  send_webhook([{"type": "follow", "replyToken": "rt", "source": {"type": "user", "userId": "U_new"}}])
+  send_webhook([{"type": "follow", "webhookEventId": "TEST" + uuid.uuid4().hex, "replyToken": "rt",
+                 "source": {"type": "user", "userId": "U_new"}}])
   check("加好友時回覆使用說明", line_calls and "綁定" in last_texts()[0])
 
   # 單一事件出錯不影響回 200
@@ -248,6 +283,7 @@ try:
 finally:
   # 清理測試資料
   with app_module.get_db_connection() as conn:
+    conn.execute("DELETE FROM line_webhook_events WHERE webhook_event_id LIKE 'TEST%%'")
     for lid in created_lost:
       conn.execute("DELETE FROM sighting_rejections WHERE lost_id = %s", (lid,))
       conn.execute("DELETE FROM lost_reports WHERE id = %s", (lid,))

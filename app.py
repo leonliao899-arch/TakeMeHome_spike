@@ -7,6 +7,7 @@ import os
 import random
 import re
 import secrets
+import threading
 import time
 import unicodedata
 from datetime import datetime
@@ -73,6 +74,8 @@ LINE_BOT_BASIC_ID = os.environ.get("LINE_BOT_BASIC_ID", "").strip()
 # 選填：LINE 回覆裡的網站網址。沒設定就用請求本身的網址（經過 ProxyFix 會是 https）
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
 LINE_API_BASE = "https://api.line.me"
+# webhook 預設「先回 200、再在背景處理」；測試時設 LINE_WEBHOOK_SYNC=1 改成同步處理，方便立刻檢查結果
+LINE_WEBHOOK_SYNC = os.environ.get("LINE_WEBHOOK_SYNC") == "1"
 
 # 單次請求上限 32MB；超過時 Flask 會自動回 413
 # 不設 10MB 的原因：飼主表單目前直接上傳手機原圖，AI 辨識一次最多送 5 張照片，
@@ -383,6 +386,19 @@ def init_db():
         )
     """)
 
+  # 3-1. 已處理過的 LINE 事件（用 webhookEventId 去重）：
+  #      LINE 沒收到 200 會重送同一個事件，記下來就不會重複綁定、重複回覆
+  cursor.execute("""
+        CREATE TABLE IF NOT EXISTS line_webhook_events (
+            webhook_event_id TEXT PRIMARY KEY,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+  # LINE 只會在短時間內重送，7 天前的紀錄用不到了，每次啟動順手清掉
+  cursor.execute(
+      "DELETE FROM line_webhook_events WHERE created_at < NOW() - INTERVAL '7 days'"
+  )
+
   # 4. 之後新增欄位寫在這裡（Postgres 支援 IF NOT EXISTS，重複執行不會出錯）
   #    owner_token：飼主憑證；line_user_id：綁定的 LINE 帳號（之後推播用，絕不出現在任何公開 API）
   #    client_submit_id：飼主表單的送出編號（階段 5：擋重複發布）
@@ -596,9 +612,11 @@ def public_base_url():
   return PUBLIC_BASE_URL or request.url_root.rstrip("/")
 
 
-def bind_token(conn, token, line_user_id):
-  """把 LINE 帳號綁到 token 對應的公告或通報（後綁覆蓋前綁）；回傳要回覆的文字。"""
-  base = public_base_url()
+def bind_token(conn, token, line_user_id, base):
+  """把 LINE 帳號綁到 token 對應的公告或通報（後綁覆蓋前綁）；回傳要回覆的文字。
+
+  base 是網站網址（給回覆裡的連結用）。在背景執行緒裡拿不到 request，所以由呼叫端先算好傳進來。
+  """
   if token.startswith(OWNER_TOKEN_PREFIX):
     row = conn.execute(
         "UPDATE lost_reports SET line_user_id = %s WHERE owner_token = %s"
@@ -666,10 +684,32 @@ def line_send(event, texts):
     line_api_post("/v2/bot/message/push", {"to": user_id, "messages": messages})
 
 
-def handle_line_event(event):
+def claim_line_event(event):
+  """把事件 ID 記進資料庫；第一次看到回 True，已經處理過（LINE 重送）回 False。
+
+  用 INSERT ... ON CONFLICT DO NOTHING：就算原本那次還在處理、重送的同時抵達，
+  也只有一個能搶到，不會兩邊都回覆。沒有 webhookEventId 的事件（理論上不會有）一律照常處理。
+  """
+  event_id = event.get("webhookEventId")
+  if not event_id:
+    return True
+  with get_db_connection() as conn:
+    row = conn.execute(
+        "INSERT INTO line_webhook_events (webhook_event_id) VALUES (%s)"
+        " ON CONFLICT (webhook_event_id) DO NOTHING RETURNING webhook_event_id",
+        (str(event_id)[:100],),
+    ).fetchone()
+  return row is not None
+
+
+def handle_line_event(event, base):
   """處理一個 webhook 事件：加好友 → 說明；文字訊息 → 找 token 綁定"""
   etype = event.get("type")
   source = event.get("source") or {}
+
+  if not claim_line_event(event):
+    print(f"[line] 略過已處理過的事件 type={etype}")
+    return
 
   if etype == "follow":
     line_send(event, [HELP_TEXT])
@@ -690,8 +730,24 @@ def handle_line_event(event):
     return
 
   with get_db_connection() as conn:
-    replies = [bind_token(conn, t, source["userId"]) for t in tokens]
+    replies = [bind_token(conn, t, source["userId"], base) for t in tokens]
   line_send(event, replies)
+
+
+def process_line_events(events, base):
+  """逐一處理事件；單一事件出錯只記日誌，不影響其他事件"""
+  for event in events:
+    if not isinstance(event, dict):
+      continue
+    source = event.get("source") or {}
+    redelivery = (event.get("deliveryContext") or {}).get("isRedelivery")
+    # 日誌只記事件類型，不記訊息內容（綁定訊息裡會有 token）
+    print(f"[line] event type={event.get('type')} source={source.get('type')}"
+          f" redelivery={bool(redelivery)}")
+    try:
+      handle_line_event(event, base)
+    except Exception as e:
+      print(f"[line] 處理事件失敗：{type(e).__name__}: {e}")
 
 
 @app.route("/line/webhook", methods=["POST"])
@@ -699,8 +755,11 @@ def line_webhook():
   """LINE 官方帳號的 webhook。
 
   1. 用原始請求內容驗簽，不符直接回 400
-  2. 逐一處理事件；單一事件出錯只記日誌，不影響其他事件
-  3. 簽章有效的請求一律回 200（不然 LINE 會判定 webhook 失敗）
+  2. 簽章有效就「先回 200，再在背景處理事件」：
+     連 Neon、寫資料庫、呼叫 LINE 回覆加起來可能要好幾秒，
+     等處理完才回應的話，LINE 會判定逾時並重送同一個事件，使用者就會收到好幾則回覆。
+     （LINE 官方也建議 webhook 先回應、再非同步處理）
+  3. 每個事件用 webhookEventId 去重，就算 LINE 還是重送了，也只會處理一次
   LINE 後台按 Verify 時會送一個 events 為空的請求，這裡也回 200。
   """
   body = request.get_data()  # 一定要用原始內容驗簽，不能先 get_json 再重組
@@ -711,19 +770,15 @@ def line_webhook():
     payload = json.loads(body or b"{}")
   except ValueError:
     payload = {}
+  events = payload.get("events", []) if isinstance(payload, dict) else []
+  if not isinstance(events, list) or not events:
+    return "OK", 200
 
-  for event in payload.get("events", []) if isinstance(payload, dict) else []:
-    if not isinstance(event, dict):
-      continue
-    source = event.get("source") or {}
-    redelivery = (event.get("deliveryContext") or {}).get("isRedelivery")
-    # 日誌只記事件類型，不記訊息內容（綁定訊息裡會有 token）
-    print(f"[line] event type={event.get('type')} source={source.get('type')}"
-          f" redelivery={bool(redelivery)}")
-    try:
-      handle_line_event(event)
-    except Exception as e:
-      print(f"[line] 處理事件失敗：{type(e).__name__}: {e}")
+  base = public_base_url()  # 背景執行緒拿不到 request，先在這裡算好
+  if LINE_WEBHOOK_SYNC:
+    process_line_events(events, base)
+  else:
+    threading.Thread(target=process_line_events, args=(events, base), daemon=True).start()
   return "OK", 200
 
 
