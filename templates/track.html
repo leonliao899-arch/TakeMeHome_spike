@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="strict-origin">
+  <meta name="robots" content="noindex, nofollow">
   <title>通報追蹤 - TakeMeHome</title>
   <style>
     * { box-sizing: border-box; }
@@ -87,6 +89,19 @@
         <div><span>關聯公告</span><span>{{ sighting.pet_name or '' }} {{ sighting.case_code }}</span></div>
       {% endif %}
     </div>
+
+    {# 用 LINE 追蹤：還沒結果的通報才顯示（飼主已確認就不需要了） #}
+    {% if st != '飼主已確認' %}
+      <div id="lineArea"></div>
+      <script>window.LINE_BOT_BASIC_ID = {{ line_bot_basic_id|tojson }};</script>
+      <script src="{{ url_for('static', filename='line_bind.js') }}"></script>
+      <script>
+        if (window.TMH_LINE) {
+          TMH_LINE.render(document.getElementById('lineArea'),
+            { token: {{ tracking_token|tojson }}, kind: 'sighting' });
+        }
+      </script>
+    {% endif %}
   {% endif %}
 
   <a class="btn" href="/">🗺️ 回到地圖</a>

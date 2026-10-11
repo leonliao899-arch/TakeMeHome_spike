@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="strict-origin">
+  <meta name="robots" content="noindex, nofollow">
   <title>我的案件 - TakeMeHome</title>
   <style>
     * { box-sizing: border-box; }
@@ -87,9 +89,17 @@
   </div>
 
   <div id="content"><div style="text-align:center; padding:40px 0; color:#64748b;">⏳ 載入中…</div></div>
+  <!-- 用 LINE 追蹤：放在通知清單外面，按「重新整理」時不會被重畫 -->
+  <div id="lineArea"></div>
 
+  <script>window.LINE_BOT_BASIC_ID = {{ line_bot_basic_id|tojson }};</script>
+  <script src="{{ url_for('static', filename='line_bind.js') }}"></script>
   <script>
-    const LOST_ID = {{ lost_id }};   // 由 Flask 帶入，只會是整數
+    // 由 Flask 帶入的案件密鑰（own_ + 32 位 16 進位）。它就是這個頁面的「鑰匙」，
+    // 所有飼主操作都用它向後端證明身分，前端不再自己傳 lost_id。
+    const OWNER_TOKEN = {{ owner_token|tojson }};
+    const API_BASE = `/api/owner/${encodeURIComponent(OWNER_TOKEN)}`;
+    let lineRendered = false;
 
     // 「多久以前」：sighting_time 是協尋者手機的當地時間，用瀏覽器當地時間解析
     function timeAgo(text) {
@@ -129,10 +139,10 @@
       const box = document.getElementById('content');
       try {
         const [lostRes, notiRes] = await Promise.all([
-          fetch(`/api/lost_reports/${LOST_ID}`),
-          fetch(`/api/lost_reports/${LOST_ID}/notifications`)
+          fetch(`${API_BASE}/case`),
+          fetch(`${API_BASE}/notifications`)
         ]);
-        if (lostRes.status === 404) {
+        if (lostRes.status === 404 || notiRes.status === 404) {
           box.innerHTML = '<div class="error">找不到這則走失公告，請確認連結是否正確。</div>';
           return;
         }
@@ -167,11 +177,18 @@
         banner.appendChild(el('div', 'big', '🎉'));
         banner.appendChild(el('div', '', `${lost.pet_name || '寶貝'}已經回家了！系統已停止為這則公告比對新的通報。`));
         box.appendChild(banner);
+        document.getElementById('lineArea').innerHTML = '';   // 結案就不再提示綁定
         return;
       }
 
       box.appendChild(el('div', 'hint',
-        '🔖 請把這一頁加入書籤。有人通報外觀相近的動物時，會出現在下方清單；點進去可以看照片、比對特徵。'));
+        '🔖 請把這一頁加入書籤，並且不要公開分享這個網址（知道網址的人就能操作這則案件）。有人通報外觀相近的動物時，會出現在下方清單。'));
+
+      // 用 LINE 追蹤：成功頁沒綁到的人，可以在案件頁補綁（只畫一次）
+      if (!lineRendered && window.TMH_LINE) {
+        lineRendered = TMH_LINE.render(document.getElementById('lineArea'),
+          { token: OWNER_TOKEN, kind: 'owner' });
+      }
 
       // 2. 通知清單
       box.appendChild(el('h3', '', `🔔 可能是你的寶貝（${data.notification_count} 筆）`));
@@ -187,7 +204,7 @@
 
       data.notifications.forEach(n => {
         const a = el('a', 'notice' + (n.manually_confirmed ? ' picked' : ''));
-        a.href = `/case/${LOST_ID}/sighting/${Number(n.sighting_id)}`;
+        a.href = `/case/${encodeURIComponent(OWNER_TOKEN)}/sighting/${Number(n.sighting_id)}`;
         a.appendChild(photoOrPlaceholder(n.photo_1, 'notice-photo', '📷'));
 
         const body = el('div', 'notice-body');

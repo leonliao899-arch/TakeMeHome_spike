@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="strict-origin">
+  <meta name="robots" content="noindex, nofollow">
   <title>通報詳情 - TakeMeHome</title>
   <!-- Leaflet：顯示目擊地點的小地圖 -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -111,7 +113,7 @@
   </style>
 </head>
 <body>
-  <div class="top-bar"><a href="/case/{{ lost_id }}">⬅ 回到通知清單</a></div>
+  <div class="top-bar"><a id="backLink" href="/">⬅ 回到通知清單</a></div>
   <div id="content"><div style="text-align:center; padding:40px 0; color:#64748b;">⏳ 載入中…</div></div>
 
   <div class="modal-overlay" id="modal">
@@ -127,9 +129,14 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
-    const LOST_ID = {{ lost_id }};
-    const SIGHTING_ID = {{ sighting_id }};
+    // 案件密鑰由 Flask 帶入；前端不再傳 lost_id，伺服器用密鑰找出是哪一件案子
+    const OWNER_TOKEN = {{ owner_token|tojson }};
+    const SIGHTING_ID = {{ sighting_id|tojson }};
+    const API_BASE = `/api/owner/${encodeURIComponent(OWNER_TOKEN)}`;
+    const CASE_URL = `/case/${encodeURIComponent(OWNER_TOKEN)}`;
     const STATUS_ICON = { match: '✅', partial: '🟡', maybe: '🟡', unclear: '❔', diff: '❌' };
+
+    document.getElementById('backLink').href = CASE_URL;
 
     function el(tag, className, text) {
       const e = document.createElement(tag);
@@ -187,7 +194,7 @@
     async function load() {
       const box = document.getElementById('content');
       try {
-        const res = await fetch(`/api/lost_reports/${LOST_ID}/sightings/${SIGHTING_ID}`);
+        const res = await fetch(`${API_BASE}/sightings/${encodeURIComponent(SIGHTING_ID)}`);
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           box.innerHTML = '';
@@ -244,7 +251,6 @@
       });
       box.appendChild(table);
 
-      // 4. 目擊位置描述
       // 4. 目擊地點：小地圖＋導航按鈕＋發現環境（飼主前往現場確認，就是 O2O 的關鍵一步）
       box.appendChild(el('h3', '', '📍 目擊地點'));
       const mapDiv = el('div');
@@ -323,7 +329,7 @@
       r.appendChild(el('div', 'big', kind === 'found' ? '🎉' : '🙏'));
       r.appendChild(el('div', '', text));
       const link = el('a', '', kind === 'found' ? '🗺️ 回到地圖' : '⬅ 回到通知清單');
-      link.href = kind === 'found' ? '/' : `/case/${LOST_ID}`;
+      link.href = kind === 'found' ? '/' : CASE_URL;
       r.appendChild(link);
       actions.appendChild(r);
     }
@@ -360,7 +366,7 @@
 
     async function confirmFound() {
       try {
-        await postJson(`/api/lost_reports/${LOST_ID}/confirm_found`);
+        await postJson(`${API_BASE}/confirm_found`);
         showResult('found', '恭喜！已標記為「已尋回」，謝謝協尋者的幫忙。');
       } catch (err) {
         alert('❌ ' + err.message);
@@ -369,7 +375,7 @@
 
     async function rejectSighting() {
       try {
-        await postJson(`/api/lost_reports/${LOST_ID}/reject_sighting`);
+        await postJson(`${API_BASE}/reject_sighting`);
         showResult('rejected', '已記錄，這筆通報不會再出現在你的通知清單。');
       } catch (err) {
         alert('❌ ' + err.message);

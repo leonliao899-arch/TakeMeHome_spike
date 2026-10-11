@@ -1,14 +1,19 @@
+import base64
+import hashlib
+import hmac
 import json
 import math
 import os
 import random
 import re
+import secrets
 import time
-import uuid
+import unicodedata
 from datetime import datetime
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, abort, jsonify, render_template, render_template_string, request
+from werkzeug.middleware.proxy_fix import ProxyFix
 
-# 讀取專案根目錄的 .env（放 Azure 金鑰、DATABASE_URL、CLOUDINARY_URL；沒裝 python-dotenv 也不影響執行）
+# 讀取專案根目錄的 .env（放 Azure 金鑰、DATABASE_URL、CLOUDINARY_URL、LINE 金鑰；沒裝 python-dotenv 也不影響執行）
 try:
   from dotenv import load_dotenv
 
@@ -20,6 +25,9 @@ except ImportError:
 # 用法跟原本 sqlite3.Row 一樣（row["species"]、dict(row)、row.keys() 都能用）
 import psycopg
 from psycopg.rows import dict_row
+
+# 呼叫 LINE Messaging API（回覆／推播綁定結果）
+import requests
 
 # 照片存放：Cloudinary（需要 CLOUDINARY_URL）。
 # Render 每次重新部署或重啟，伺服器上的檔案都會被清掉，所以照片不能再存在 static/uploads
@@ -35,6 +43,10 @@ from vision import vision_bp
 app = Flask(__name__)
 app.register_blueprint(vision_bp)
 
+# Render 前面有一層代理：讓 Flask 從 X-Forwarded-Proto / Host 得知原本是 https，
+# request.url_root 才會是 https://takemehome-spike.onrender.com/（LINE 回覆裡的連結要用它）
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+
 # Neon 的連線字串（請用 Connection pooling 版本，主機名稱含 -pooler）
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
@@ -49,6 +61,19 @@ if USE_CLOUDINARY:
   cloudinary.config(secure=True)  # 自動讀取 CLOUDINARY_URL，回傳 https 網址
 CLOUDINARY_FOLDER = "takemehome"
 
+# ==========================================
+# LINE 設定（階段 0 在 Render → Environment 設好）
+# ==========================================
+# Channel secret：驗證 webhook 請求真的是 LINE 送來的
+LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET", "")
+# Channel access token：呼叫回覆／推播 API 用
+LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+# 機器人的 Basic ID（@ 開頭，例如 @123abcde）：成功頁的「用 LINE 追蹤」按鈕用
+LINE_BOT_BASIC_ID = os.environ.get("LINE_BOT_BASIC_ID", "").strip()
+# 選填：LINE 回覆裡的網站網址。沒設定就用請求本身的網址（經過 ProxyFix 會是 https）
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
+LINE_API_BASE = "https://api.line.me"
+
 # 單次請求上限 32MB；超過時 Flask 會自動回 413
 # 不設 10MB 的原因：飼主表單目前直接上傳手機原圖，AI 辨識一次最多送 5 張照片，
 # iPhone 照片轉成 JPEG 後單張就可能超過 5MB，設太小會讓上傳在中途被切斷。
@@ -59,6 +84,58 @@ UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "static", "uploads")
 
 # matcher.py 計算天數時使用的時間格式，所有寫入資料庫的時間都要統一成這個格式
 TIME_FORMAT = "%Y-%m-%d %H:%M"
+
+
+@app.context_processor
+def inject_line_settings():
+  """所有頁面都拿得到 LINE 機器人的 Basic ID（沒設定時是空字串，前端就不顯示 LINE 按鈕）"""
+  return {"line_bot_basic_id": LINE_BOT_BASIC_ID}
+
+
+# ==========================================
+# 案件憑證（token）
+# ==========================================
+# 飼主：own_ + 32 位 16 進位字元（128 位元隨機）。持有它的人才能看案件通知、確認或排除通報。
+# 協尋者：trk_ + 32 位 16 進位字元。持有它的人才能追蹤通報、指認公告。
+# 公開的數字 id 與 case_code（LOST-1234）只拿來在地圖上辨識，絕對不能當憑證。
+OWNER_TOKEN_PREFIX = "own_"
+TRACK_TOKEN_PREFIX = "trk_"
+OWNER_TOKEN_RE = re.compile(r"^own_[0-9a-f]{32}$")
+TRACK_TOKEN_RE = re.compile(r"^trk_[0-9a-f]{32}$")
+
+# 飼主表單的「送出編號」：前端每次開表單產生一組，重送時沿用，用來擋重複發布
+CLIENT_SUBMIT_ID_RE = re.compile(r"^[0-9A-Za-z-]{16,64}$")
+
+
+def new_token(prefix):
+  """由伺服器產生一組不可猜的憑證；前端永遠不能自己決定 token"""
+  return prefix + secrets.token_hex(16)
+
+
+def token_matches(stored, given):
+  """比對兩個 token 是否相同（固定時間比對，避免從回應時間猜出內容）"""
+  if not stored or not isinstance(given, str) or not given:
+    return False
+  return hmac.compare_digest(stored.encode("utf-8"), given.encode("utf-8"))
+
+
+def find_lost_id_by_owner_token(conn, token):
+  """用飼主 token 反查走失公告的 id；格式不對或查不到都回傳 None。
+
+  飼主端所有頁面與 API 都只認 token，由伺服器自己查出是哪一則公告，
+  前端沒有機會指定「我要操作哪一個 id」，所以改數字、猜數字都沒有用。
+  """
+  if not isinstance(token, str) or not OWNER_TOKEN_RE.match(token):
+    return None
+  row = conn.execute(
+      "SELECT id FROM lost_reports WHERE owner_token = %s", (token,)
+  ).fetchone()
+  return row["id"] if row else None
+
+
+def owner_not_found():
+  """token 錯誤與案件不存在回同一個訊息，不透露案件是否存在"""
+  return jsonify({"error": "找不到這個案件，請確認連結是否完整"}), 404
 
 
 def normalize_time(raw):
@@ -80,8 +157,9 @@ def normalize_time(raw):
   return text
 
 
-# 公開給前端的欄位清單：刻意不含 email、精確座標、追蹤碼，
+# 公開給前端的欄位清單：刻意不含 email、精確座標、追蹤碼、LINE 帳號，
 # 避免任何人（包含飼主與協尋者彼此）從 API 拿到對方的聯絡方式或精確位置
+# 注意：所有查詢都要明確列出欄位，不要用 SELECT *，新增的 owner_token / line_user_id 才不會外洩
 LOST_PUBLIC_FIELDS = """
     id, case_code, pet_name, species, size, fur_length, accessory, accessory_color,
     fur_color, special_mark, special_mark_note, notes, photo_1, photo_2, photo_3,
@@ -208,6 +286,9 @@ def get_db_connection():
   prepare_threshold=None：關掉 psycopg 的自動 prepared statement。
   Neon 的 pooled 連線（主機名稱含 -pooler）經過 PgBouncer，
   prepared statement 在這種連線上可能出現「prepared statement does not exist」錯誤。
+
+  可以用 with get_db_connection() as conn: 的寫法：區塊正常結束會自動 commit，
+  發生例外會 rollback，不論如何離開區塊都會關閉連線。
   """
   return psycopg.connect(DATABASE_URL, row_factory=dict_row, prepare_threshold=None)
 
@@ -302,10 +383,47 @@ def init_db():
         )
     """)
 
-  # 4. 之後新增欄位寫在這裡（Postgres 支援 IF NOT EXISTS，重複執行不會出錯），例如：
-  # cursor.execute("ALTER TABLE sightings ADD COLUMN IF NOT EXISTS new_col TEXT")
+  # 4. 之後新增欄位寫在這裡（Postgres 支援 IF NOT EXISTS，重複執行不會出錯）
+  #    owner_token：飼主憑證；line_user_id：綁定的 LINE 帳號（之後推播用，絕不出現在任何公開 API）
+  #    client_submit_id：飼主表單的送出編號（階段 5：擋重複發布）
+  cursor.execute("ALTER TABLE lost_reports ADD COLUMN IF NOT EXISTS owner_token TEXT")
+  cursor.execute("ALTER TABLE lost_reports ADD COLUMN IF NOT EXISTS line_user_id TEXT")
+  cursor.execute("ALTER TABLE lost_reports ADD COLUMN IF NOT EXISTS client_submit_id TEXT")
+  cursor.execute("ALTER TABLE sightings ADD COLUMN IF NOT EXISTS line_user_id TEXT")
 
+  # 5. 補發 token：舊資料（沒有 owner_token 的公告、沒有追蹤碼的通報）也要有，
+  #    確保「每一筆資料都有 token」。補發的 token 只存在資料庫，沒有人知道，
+  #    舊公告的飼主頁因此無法再從網址打開（這正是預期的結果）。
+  cursor.execute("SELECT id FROM lost_reports WHERE owner_token IS NULL OR owner_token = ''")
+  for row in cursor.fetchall():
+    cursor.execute(
+        "UPDATE lost_reports SET owner_token = %s WHERE id = %s",
+        (new_token(OWNER_TOKEN_PREFIX), row["id"]),
+    )
+  cursor.execute("SELECT id FROM sightings WHERE tracking_token IS NULL OR tracking_token = ''")
+  for row in cursor.fetchall():
+    cursor.execute(
+        "UPDATE sightings SET tracking_token = %s WHERE id = %s",
+        (new_token(TRACK_TOKEN_PREFIX), row["id"]),
+    )
   conn.commit()
+
+  # 6. 唯一索引：token 不可重複；client_submit_id 不可重複（NULL 可以有很多筆，舊資料不受影響）
+  #    萬一舊資料有重複值導致建立失敗，只印警告、不讓網站起不來
+  for index_name, table, column in (
+      ("idx_lost_reports_owner_token", "lost_reports", "owner_token"),
+      ("idx_sightings_tracking_token", "sightings", "tracking_token"),
+      ("idx_lost_reports_client_submit_id", "lost_reports", "client_submit_id"),
+  ):
+    try:
+      cursor.execute(
+          f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table} ({column})"
+      )
+      conn.commit()
+    except psycopg.Error as e:
+      conn.rollback()
+      print(f"[init_db] 建立唯一索引 {index_name} 失敗：{e}")
+
   conn.close()
 
 
@@ -313,10 +431,52 @@ def init_db():
 init_db()
 
 
+# ==========================================
+# 錯誤處理與回應標頭
+# ==========================================
+NOT_FOUND_HTML = """<!DOCTYPE html>
+<html lang="zh-TW"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>找不到頁面 - TakeMeHome</title>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+max-width:500px;margin:0 auto;padding:60px 16px;text-align:center;color:#333;line-height:1.6}
+a{display:inline-block;margin-top:20px;padding:11px 20px;border-radius:6px;background:#2563eb;
+color:#fff;text-decoration:none;font-weight:bold}</style></head>
+<body><div style="font-size:44px">🤔</div><h2>找不到這個頁面</h2>
+<p>連結可能不完整，或這個案件不存在。<br>請確認是否完整複製了連結。</p>
+<a href="/">🗺️ 回到地圖</a></body></html>"""
+
+
+@app.errorhandler(404)
+def not_found(_err):
+  """API 回 JSON；頁面回友善的中文頁面（不透露是「沒有這個案件」還是「token 不對」）"""
+  if request.path.startswith("/api/"):
+    return jsonify({"error": "找不到資料"}), 404
+  return render_template_string(NOT_FOUND_HTML), 404
+
+
 @app.errorhandler(413)
 def file_too_large(_err):
   """上傳超過 MAX_CONTENT_LENGTH 時回傳前端看得懂的 JSON，而不是 HTML 錯誤頁"""
   return jsonify({"error": "照片太大，請改選較小的照片"}), 413
+
+
+# 網址裡帶有 token 的頁面與 API
+PRIVATE_PATH_PREFIXES = ("/case/", "/api/owner/", "/track/", "/api/bind-status/")
+
+
+@app.after_request
+def add_private_headers(resp):
+  """帶有 token 的頁面與 API：不快取、不被搜尋引擎收錄、不把完整網址（含 token）送給第三方。
+
+  Referrer-Policy 用 strict-origin（只送網站網域，不送路徑），不要用 no-referrer：
+  OpenStreetMap 的圖磚伺服器要求請求必須帶 Referer，完全拿掉會讓地圖載不出來。
+  """
+  if request.path.startswith(PRIVATE_PATH_PREFIXES):
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["Referrer-Policy"] = "strict-origin"
+    resp.headers["X-Robots-Tag"] = "noindex, nofollow"
+  return resp
 
 
 # ==========================================
@@ -326,6 +486,12 @@ def file_too_large(_err):
 def index():
   """首頁路由：回傳地圖頁面"""
   return render_template("index.html")
+
+
+@app.route("/healthz")
+def healthz():
+  """給定時 ping 用的簡單路徑：不查資料庫，只確認 Render 服務醒著"""
+  return "ok", 200
 
 
 @app.route("/lost-form")
@@ -340,17 +506,25 @@ def sighting_form():
   return render_template("sighting_form.html")
 
 
-@app.route("/case/<int:lost_id>")
-def case_page(lost_id):
-  """飼主的案件頁（通知欄）：列出這則公告收到的目擊通報"""
-  return render_template("case.html", lost_id=lost_id)
+@app.route("/case/<token>")
+def case_page(token):
+  """飼主的案件頁（通知欄）：網址裡的 token 就是憑證，數字 id 的舊網址一律 404"""
+  with get_db_connection() as conn:
+    lost_id = find_lost_id_by_owner_token(conn, token)
+  if lost_id is None:
+    abort(404)
+  return render_template("case.html", owner_token=token)
 
 
-@app.route("/case/<int:lost_id>/sighting/<int:sighting_id>")
-def sighting_detail_page(lost_id, sighting_id):
+@app.route("/case/<token>/sighting/<int:sighting_id>")
+def sighting_detail_page(token, sighting_id):
   """飼主看單筆通報的詳情頁：照片與特徵並排，按下確認或排除"""
+  with get_db_connection() as conn:
+    lost_id = find_lost_id_by_owner_token(conn, token)
+  if lost_id is None:
+    abort(404)
   return render_template(
-      "sighting_detail.html", lost_id=lost_id, sighting_id=sighting_id
+      "sighting_detail.html", owner_token=token, sighting_id=sighting_id
   )
 
 
@@ -377,8 +551,197 @@ def track_sighting(token):
   conn.close()
 
   if not row:
-    return render_template("track.html", sighting=None), 404
-  return render_template("track.html", sighting=dict(row))
+    return render_template("track.html", sighting=None, tracking_token=None), 404
+  return render_template("track.html", sighting=dict(row), tracking_token=token)
+
+
+# ==========================================
+# LINE 綁定（階段 4）
+# ==========================================
+def verify_line_signature(body, signature):
+  """驗證 X-Line-Signature：用 Channel secret 對「原始請求內容」做 HMAC-SHA256，再 Base64。
+
+  沒設定 LINE_CHANNEL_SECRET 時一律視為驗證失敗，避免有人偽造事件。
+  """
+  if not LINE_CHANNEL_SECRET or not signature:
+    return False
+  digest = hmac.new(LINE_CHANNEL_SECRET.encode("utf-8"), body, hashlib.sha256).digest()
+  expected = base64.b64encode(digest).decode("utf-8")
+  return hmac.compare_digest(expected.encode("utf-8"), signature.encode("utf-8"))
+
+
+# 從使用者訊息裡找 token 的寬鬆規則：
+# 先用 NFKC 把全形字轉半形（ｏｗｎ＿ → own_）、轉小寫、拿掉所有空白與零寬字元，
+# 再找「own 或 trk」+（底線可有可無，也接受 -）+ 32 個十六進位字元。
+# 這樣「綁定 OWN_ABC…」「綁定\nown_ abc…」「綁定 ｏｗｎ＿ａｂｃ…」都抓得到。
+TOKEN_IN_TEXT_RE = re.compile(r"(own|trk)[_-]?([0-9a-f]{32})")
+INVISIBLE_RE = re.compile(r"[\s​-‍⁠﻿]+")
+
+
+def extract_tokens(text):
+  """從一段文字抓出所有 token（去重、保留順序、最多 5 組），回傳標準格式 own_xxx / trk_xxx"""
+  if not isinstance(text, str):
+    return []
+  cleaned = INVISIBLE_RE.sub("", unicodedata.normalize("NFKC", text)).lower()
+  found = []
+  for kind, hex32 in TOKEN_IN_TEXT_RE.findall(cleaned):
+    token = f"{kind}_{hex32}"
+    if token not in found:
+      found.append(token)
+  return found[:5]
+
+
+def public_base_url():
+  """LINE 回覆裡的網站網址：優先用 PUBLIC_BASE_URL，否則用這次請求的網址"""
+  return PUBLIC_BASE_URL or request.url_root.rstrip("/")
+
+
+def bind_token(conn, token, line_user_id):
+  """把 LINE 帳號綁到 token 對應的公告或通報（後綁覆蓋前綁）；回傳要回覆的文字。"""
+  base = public_base_url()
+  if token.startswith(OWNER_TOKEN_PREFIX):
+    row = conn.execute(
+        "UPDATE lost_reports SET line_user_id = %s WHERE owner_token = %s"
+        " RETURNING pet_name, case_code",
+        (line_user_id, token),
+    ).fetchone()
+    if not row:
+      return "找不到這組追蹤碼，請確認完整複製"
+    return (
+        f"已綁定「{row['pet_name'] or '未命名'}」{row['case_code']} ✓\n"
+        f"案件頁：{base}/case/{token}\n"
+        "（這個連結就是你的鑰匙，請不要轉傳給別人）"
+    )
+
+  row = conn.execute(
+      "UPDATE sightings SET line_user_id = %s WHERE tracking_token = %s RETURNING id",
+      (line_user_id, token),
+  ).fetchone()
+  if not row:
+    return "找不到這組追蹤碼，請確認完整複製"
+  return f"已綁定你的目擊通報 ✓\n處理進度：{base}/track/{token}"
+
+
+HELP_TEXT = (
+    "你好，這裡是 TakeMeHome 走失寵物協尋 🐾\n"
+    "要用 LINE 追蹤案件，請在網站送出成功的頁面按「用 LINE 追蹤」，"
+    "或把「綁定 own_…」／「綁定 trk_…」整段文字貼到這裡。"
+)
+GROUP_TEXT = "為了保護你的案件，請在和官方帳號的一對一聊天室裡傳送綁定訊息，不要在群組裡貼。"
+
+
+def line_api_post(path, payload):
+  """呼叫 LINE Messaging API；成功回 True。日誌只記狀態碼，不記訊息內容（內容有 token）"""
+  if not LINE_CHANNEL_ACCESS_TOKEN:
+    print("[line] 沒有設定 LINE_CHANNEL_ACCESS_TOKEN，略過回覆")
+    return False
+  try:
+    resp = requests.post(
+        LINE_API_BASE + path,
+        json=payload,
+        headers={"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"},
+        timeout=5,
+    )
+  except requests.RequestException as e:
+    print(f"[line] {path} 連線失敗：{type(e).__name__}")
+    return False
+  if resp.status_code != 200:
+    print(f"[line] {path} 回應 {resp.status_code}：{resp.text[:200]}")
+    return False
+  return True
+
+
+def line_send(event, texts):
+  """回覆使用者：先用 reply（免費）；reply token 失效時（服務剛醒、或 LINE 重送的事件）改用 push。"""
+  messages = [{"type": "text", "text": t[:4900]} for t in texts][:5]
+  if not messages:
+    return
+  redelivered = bool((event.get("deliveryContext") or {}).get("isRedelivery"))
+  reply_token = event.get("replyToken")
+  if reply_token and not redelivered:
+    if line_api_post("/v2/bot/message/reply", {"replyToken": reply_token, "messages": messages}):
+      return
+  user_id = (event.get("source") or {}).get("userId")
+  if user_id:
+    line_api_post("/v2/bot/message/push", {"to": user_id, "messages": messages})
+
+
+def handle_line_event(event):
+  """處理一個 webhook 事件：加好友 → 說明；文字訊息 → 找 token 綁定"""
+  etype = event.get("type")
+  source = event.get("source") or {}
+
+  if etype == "follow":
+    line_send(event, [HELP_TEXT])
+    return
+
+  message = event.get("message") or {}
+  if etype != "message" or message.get("type") != "text":
+    return
+
+  tokens = extract_tokens(message.get("text", ""))
+  if not tokens:
+    line_send(event, [HELP_TEXT])
+    return
+
+  # 群組／多人聊天室裡不綁定：貼 token 等於把案件鑰匙給整個群組
+  if source.get("type") != "user" or not source.get("userId"):
+    line_send(event, [GROUP_TEXT])
+    return
+
+  with get_db_connection() as conn:
+    replies = [bind_token(conn, t, source["userId"]) for t in tokens]
+  line_send(event, replies)
+
+
+@app.route("/line/webhook", methods=["POST"])
+def line_webhook():
+  """LINE 官方帳號的 webhook。
+
+  1. 用原始請求內容驗簽，不符直接回 400
+  2. 逐一處理事件；單一事件出錯只記日誌，不影響其他事件
+  3. 簽章有效的請求一律回 200（不然 LINE 會判定 webhook 失敗）
+  LINE 後台按 Verify 時會送一個 events 為空的請求，這裡也回 200。
+  """
+  body = request.get_data()  # 一定要用原始內容驗簽，不能先 get_json 再重組
+  if not verify_line_signature(body, request.headers.get("X-Line-Signature", "")):
+    return jsonify({"error": "invalid signature"}), 400
+
+  try:
+    payload = json.loads(body or b"{}")
+  except ValueError:
+    payload = {}
+
+  for event in payload.get("events", []) if isinstance(payload, dict) else []:
+    if not isinstance(event, dict):
+      continue
+    source = event.get("source") or {}
+    redelivery = (event.get("deliveryContext") or {}).get("isRedelivery")
+    # 日誌只記事件類型，不記訊息內容（綁定訊息裡會有 token）
+    print(f"[line] event type={event.get('type')} source={source.get('type')}"
+          f" redelivery={bool(redelivery)}")
+    try:
+      handle_line_event(event)
+    except Exception as e:
+      print(f"[line] 處理事件失敗：{type(e).__name__}: {e}")
+  return "OK", 200
+
+
+@app.route("/api/bind-status/<token>")
+def bind_status(token):
+  """成功頁輪詢用：只回答這個 token 有沒有綁定 LINE，不回傳任何其他資料。
+
+  token 格式不對或查不到，都回 {bound: false}，不透露是哪一種。
+  """
+  if OWNER_TOKEN_RE.match(token):
+    sql = "SELECT line_user_id FROM lost_reports WHERE owner_token = %s"
+  elif TRACK_TOKEN_RE.match(token):
+    sql = "SELECT line_user_id FROM sightings WHERE tracking_token = %s"
+  else:
+    return jsonify({"bound": False}), 200
+  with get_db_connection() as conn:
+    row = conn.execute(sql, (token,)).fetchone()
+  return jsonify({"bound": bool(row and row["line_user_id"])}), 200
 
 
 # ==========================================
@@ -466,12 +829,38 @@ def calculate_public_coords(lat, lng, radius_meters):
   return round(lat + delta_lat, 6), round(lng + delta_lng, 6)
 
 
+def lost_created_response(row, status_code, duplicate=False):
+  """發布成功的回應（第一次發布與重複送出回同樣的內容，前端不用分辨）"""
+  return (
+      jsonify({
+          "message": "公告發布成功！",
+          "id": row["id"],
+          "case_code": row["case_code"],
+          # 飼主憑證：只回給送出這張表單的人；之後沒有任何公開 API 會再回傳它
+          "owner_token": row["owner_token"],
+          "lat_public": row["lat_public"],
+          "lng_public": row["lng_public"],
+          "duplicate": duplicate,
+      }),
+      status_code,
+  )
+
+
 @app.route("/api/lost_reports", methods=["POST"])
 def create_lost_report():
-  """接收飼主發布走失公告，寫入資料庫"""
-  data = request.get_json()
+  """接收飼主發布走失公告，寫入資料庫，並由伺服器產生飼主憑證 owner_token。
+
+  防重複送出（階段 5）：前端每次開表單產生一組 client_submit_id，重送時沿用同一組。
+  資料庫對它有唯一索引，所以就算「第一次其實成功了、只是回應在路上斷掉」再按一次，
+  也只會有一筆公告，並回傳同一個 owner_token。
+  """
+  data = request.get_json(silent=True)
   if not data:
     return jsonify({"error": "未收到任何資料"}), 400
+
+  client_submit_id = data.get("client_submit_id")
+  if not isinstance(client_submit_id, str) or not CLIENT_SUBMIT_ID_RE.match(client_submit_id):
+    client_submit_id = None  # 舊版前端沒有送編號：照常發布，只是沒有重複保護
 
   if not data.get("pet_name"):
     return jsonify({"error": "請填寫寵物名字"}), 400
@@ -502,71 +891,66 @@ def create_lost_report():
     lat_precise = float(data.get("lat"))
     lng_precise = float(data.get("lng"))
     privacy_radius = int(data.get("privacy_radius", 50))
-  except ValueError:
+  except (TypeError, ValueError):
     return jsonify({"error": "座標或模糊半徑格式不正確"}), 400
 
   lat_public, lng_public = calculate_public_coords(
       lat_precise, lng_precise, privacy_radius
   )
   case_code = f"LOST-{random.randint(1000, 9999)}"
+  owner_token = new_token(OWNER_TOKEN_PREFIX)
 
-  conn = get_db_connection()
-  cursor = conn.cursor()
+  # 欄位與值成對列出，再自動產生 %s 佔位符，避免新增欄位時數錯數量
+  record = [
+      ("case_code", case_code),
+      ("pet_name", data.get("pet_name").strip()),
+      ("species", data.get("species", "狗")),
+      ("size", data.get("size", "中")),
+      ("fur_length", data.get("fur_length", "短毛")),
+      ("accessory", data.get("accessory", "沒有")),
+      ("accessory_color", data.get("accessory_color", "無")),
+      ("fur_color", data.get("fur_color", "黑/深棕")),
+      ("special_mark", data.get("special_mark", "沒有")),
+      ("special_mark_note", special_mark_note),
+      ("notes", data.get("notes", "")),
+      ("photo_1", data.get("photo_1")),
+      ("photo_2", data.get("photo_2", "")),
+      ("photo_3", data.get("photo_3", "")),
+      ("photo_4", data.get("photo_4", "")),
+      ("photo_5", data.get("photo_5", "")),
+      ("lat_precise", lat_precise),
+      ("lng_precise", lng_precise),
+      ("lat_public", lat_public),
+      ("lng_public", lng_public),
+      ("privacy_radius", privacy_radius),
+      ("lost_time", lost_time),
+      ("email", email),
+      ("status", "尋找中"),
+      ("owner_token", owner_token),
+      ("client_submit_id", client_submit_id),
+  ]
+  columns = ", ".join(name for name, _ in record)
+  placeholders = ", ".join(["%s"] * len(record))
+  returning = "RETURNING id, case_code, owner_token, lat_public, lng_public"
 
-  # Postgres 沒有 cursor.lastrowid，改用 RETURNING id 取回新資料的編號
-  cursor.execute(
-      """
-        INSERT INTO lost_reports (
-            case_code, pet_name, species, size, fur_length,
-            accessory, accessory_color, fur_color, special_mark, special_mark_note, notes,
-            photo_1, photo_2, photo_3, photo_4, photo_5,
-            lat_precise, lng_precise, lat_public, lng_public, privacy_radius,
-            lost_time, email, status
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                  %s, %s, %s, %s, %s, %s, %s, '尋找中')
-        RETURNING id
-    """,
-      (
-          case_code,
-          data.get("pet_name").strip(),
-          data.get("species", "狗"),
-          data.get("size", "中"),
-          data.get("fur_length", "短毛"),
-          data.get("accessory", "沒有"),
-          data.get("accessory_color", "無"),
-          data.get("fur_color", "黑/深棕"),
-          data.get("special_mark", "沒有"),
-          special_mark_note,
-          data.get("notes", ""),
-          data.get("photo_1"),
-          data.get("photo_2", ""),
-          data.get("photo_3", ""),
-          data.get("photo_4", ""),
-          data.get("photo_5", ""),
-          lat_precise,
-          lng_precise,
-          lat_public,
-          lng_public,
-          privacy_radius,
-          lost_time,
-          email,
-      ),
-  )
+  with get_db_connection() as conn:
+    # 同一個 client_submit_id 已經發布過：ON CONFLICT DO NOTHING 不會新增，RETURNING 也沒有資料
+    row = conn.execute(
+        f"INSERT INTO lost_reports ({columns}) VALUES ({placeholders})"
+        f" ON CONFLICT (client_submit_id) DO NOTHING {returning}",
+        [value for _, value in record],
+    ).fetchone()
+    if row:
+      return lost_created_response(row, 201)
 
-  new_id = cursor.fetchone()["id"]
-  conn.commit()
-  conn.close()
-
-  return (
-      jsonify({
-          "message": "公告發布成功！",
-          "id": new_id,
-          "case_code": case_code,
-          "lat_public": lat_public,
-          "lng_public": lng_public,
-      }),
-      201,
-  )
+    existing = conn.execute(
+        "SELECT id, case_code, owner_token, lat_public, lng_public"
+        " FROM lost_reports WHERE client_submit_id = %s",
+        (client_submit_id,),
+    ).fetchone()
+  if not existing:  # 理論上不會發生；保險起見回可重試的錯誤
+    return jsonify({"error": "發布時發生問題，請再按一次送出"}), 500
+  return lost_created_response(existing, 200, duplicate=True)
 
 
 @app.route("/api/sightings", methods=["POST"])
@@ -574,7 +958,7 @@ def create_sighting():
   """【檢查點二】協尋者目擊通報 API：
 
   1. 先存檔保底寫入 sightings
-  2. 自動產生專屬 tracking_token
+  2. 由伺服器產生專屬 tracking_token（trk_ 開頭、128 位元隨機）
   3. 反向撈取尋找中的走失公告進行加權比對
   4. 回傳外觀分數 >= NOTIFY_THRESHOLD（40）的候選清單
      （60 分以上排前面，同一級內依時空分數由高至低）
@@ -622,7 +1006,7 @@ def create_sighting():
       if isinstance(ai_prefill, dict) else None
   )
 
-  tracking_token = f"token_{uuid.uuid4().hex[:8]}"
+  tracking_token = new_token(TRACK_TOKEN_PREFIX)
 
   # 2. 先存檔保底：寫入 sightings 資料表
   conn = get_db_connection()
@@ -734,59 +1118,66 @@ def create_sighting():
 def match_sighting(sighting_id):
   """【檢查點三】協尋者反向指認 API（「就是這隻！」）：
 
-  1. 接收協尋者選擇的 lost_id
-  2. 將 sightings 表中的 matched_lost_id 綁定該公告
-  3. 將 status 更新為 '已通知飼主'，並記錄分數
+  1. 必須帶這筆通報自己的 tracking_token，後端比對相符才處理
+     （通報不存在與追蹤碼不符回同一個錯誤，不透露通報是否存在）
+  2. 外觀分數由伺服器用 calculate_match 重新計算，不採用前端傳來的任何分數
+  3. 將 sightings 表中的 matched_lost_id 綁定該公告，status 更新為 '已通知飼主'
   """
-  data = request.get_json() or {}
-  lost_id = data.get("lost_id")
-
-  if not lost_id:
+  data = request.get_json(silent=True) or {}
+  token = data.get("tracking_token")
+  try:
+    lost_id = int(data.get("lost_id"))
+  except (TypeError, ValueError):
     return jsonify({"error": "缺少要關聯的走失公告 ID (lost_id)"}), 400
 
-  conn = get_db_connection()
-  cursor = conn.cursor()
+  with get_db_connection() as conn:
+    sighting = conn.execute(
+        """
+        SELECT id, status, tracking_token, species, size, fur_length, accessory,
+               accessory_color, fur_color, special_mark, special_mark_note,
+               lat, lng, sighting_time
+        FROM sightings WHERE id = %s
+        """,
+        (sighting_id,),
+    ).fetchone()
 
-  # 確認該通報存在
-  cursor.execute(
-      "SELECT id, status FROM sightings WHERE id = %s", (sighting_id,)
-  )
-  sighting = cursor.fetchone()
-  if not sighting:
-    conn.close()
-    return jsonify({"error": f"找不到通報 ID {sighting_id}"}), 404
+    if not sighting or not token_matches(sighting["tracking_token"], token):
+      return jsonify({"error": "找不到這筆通報，或追蹤碼不正確"}), 404
 
-  # 飼主已確認或已排除的通報不能再被改綁，避免覆蓋飼主的判斷
-  if sighting["status"] in ("飼主已確認", "飼主已排除"):
-    conn.close()
-    return jsonify({"error": "這筆通報飼主已處理過，無法再指認"}), 409
+    # 飼主已確認或已排除的通報不能再被改綁，避免覆蓋飼主的判斷
+    if sighting["status"] in ("飼主已確認", "飼主已排除"):
+      return jsonify({"error": "這筆通報飼主已處理過，無法再指認"}), 409
 
-  # 確認該走失公告存在
-  cursor.execute(
-      "SELECT id, case_code, pet_name, email FROM lost_reports WHERE id = %s",
-      (lost_id,),
-  )
-  lost = cursor.fetchone()
-  if not lost:
-    conn.close()
-    return jsonify({"error": f"找不到走失公告 ID {lost_id}"}), 404
+    lost = conn.execute(
+        """
+        SELECT id, case_code, pet_name, status, species, size, fur_length, accessory,
+               accessory_color, fur_color, special_mark, special_mark_note,
+               lat_precise, lng_precise, lost_time
+        FROM lost_reports WHERE id = %s
+        """,
+        (lost_id,),
+    ).fetchone()
+    if not lost:
+      return jsonify({"error": f"找不到走失公告 ID {lost_id}"}), 404
+    if lost["status"] != "尋找中":
+      return jsonify({"error": "這則公告已經結案，無法再指認"}), 409
 
-  score = data.get("score", 100)
+    match_res = calculate_match(lost_to_match_obj(lost), sighting_to_match_obj(sighting))
+    if match_res["is_excluded"]:
+      return jsonify({"error": "物種不同，無法指認這則公告"}), 400
+    score = int(match_res["appearance_score"])
 
-  # 更新目擊通報狀態與關聯外鍵
-  cursor.execute(
-      """
+    # 更新目擊通報狀態與關聯外鍵
+    conn.execute(
+        """
         UPDATE sightings
         SET matched_lost_id = %s,
             status = '已通知飼主',
             score = %s
         WHERE id = %s
-    """,
-      (lost_id, score, sighting_id),
-  )
-
-  conn.commit()
-  conn.close()
+        """,
+        (lost_id, score, sighting_id),
+    )
 
   return (
       jsonify({
@@ -805,13 +1196,15 @@ def match_sighting(sighting_id):
 
 
 # ==========================================
-# 【檢查點四】飼主端 API：公告詳情、通知清單、通報詳情、確認 / 排除
+# 【檢查點四】飼主端 API：全部改用飼主 token（/api/owner/<token>/...）
+# 伺服器用 token 反查是哪一則公告，前端不再傳 lost_id，所以不可能操作別人的案件。
+# 公開的 GET /api/lost_reports/<id> 保留給協尋者「我看過這隻」顯示參考公告用。
 # ==========================================
 @app.route("/api/lost_reports/<int:lost_id>", methods=["GET"])
 def get_lost_report(lost_id):
-  """取單則走失公告的公開資訊（不含 email 與精確座標）。
+  """取單則走失公告的公開資訊（不含 email、精確座標、token）。
 
-  案件頁、詳情頁、協尋者從「我看過這隻」進入通報時都會用到。
+  協尋者從「我看過這隻」進入通報時會用到。
   """
   conn = get_db_connection()
   row = conn.execute(
@@ -823,41 +1216,52 @@ def get_lost_report(lost_id):
   return jsonify(dict(row)), 200
 
 
-@app.route("/api/lost_reports/<int:lost_id>/notifications", methods=["GET"])
-def get_lost_notifications(lost_id):
-  """查詢特定走失公告的通知清單（即時計算版）：
+@app.route("/api/owner/<token>/case", methods=["GET"])
+def owner_get_case(token):
+  """飼主案件頁用：取自己這則公告的公開資訊（不含 email 與精確座標）"""
+  with get_db_connection() as conn:
+    lost_id = find_lost_id_by_owner_token(conn, token)
+    if lost_id is None:
+      return owner_not_found()
+    row = conn.execute(
+        f"SELECT {LOST_PUBLIC_FIELDS} FROM lost_reports WHERE id = %s", (lost_id,)
+    ).fetchone()
+  return jsonify(dict(row)), 200
+
+
+@app.route("/api/owner/<token>/notifications", methods=["GET"])
+def owner_get_notifications(token):
+  """查詢這則公告的通知清單（即時計算版）：
 
   1. 撈出這筆走失公告本身的特徵
   2. 撈出還沒被認領的目擊通報，並排除「這則公告的飼主」已經排除過的
   3. 逐筆套用 calculate_match，外觀分數 >= NOTIFY_THRESHOLD（40）就算有效通知
   4. 已被協尋者手動指認（matched_lost_id = 本案）的通報，無論分數都強制納入
-  5. 依時空分數由高到低排序回傳
+  5. 依外觀等級與時空分數由高到低排序回傳
 
   隱私：回傳內容不含協尋者的 email 與追蹤碼。
   """
-  conn = get_db_connection()
-  cursor = conn.cursor()
+  with get_db_connection() as conn:
+    lost_id = find_lost_id_by_owner_token(conn, token)
+    if lost_id is None:
+      return owner_not_found()
 
-  # 1. 先確認走失公告存在，並取出比對所需欄位
-  cursor.execute(
-      """
+    # 1. 取出比對所需欄位
+    lost_row = conn.execute(
+        """
         SELECT species, size, fur_length, accessory, accessory_color,
                fur_color, special_mark, special_mark_note, lat_precise, lng_precise, lost_time
         FROM lost_reports WHERE id = %s
-    """,
-      (lost_id,),
-  )
-  lost_row = cursor.fetchone()
-  if not lost_row:
-    conn.close()
-    return jsonify({"error": f"找不到走失公告 ID {lost_id}"}), 404
-  lost_obj = lost_to_match_obj(lost_row)
+        """,
+        (lost_id,),
+    ).fetchone()
+    lost_obj = lost_to_match_obj(lost_row)
 
-  # 2. 撈出候選通報：
-  #    - 已被飼主確認（寵物已找到）的通報不再推給任何人
-  #    - 本案飼主按過「不是我的寶貝」的通報，不再出現在本案的通知欄
-  cursor.execute(
-      """
+    # 2. 撈出候選通報：
+    #    - 已被飼主確認（寵物已找到）的通報不再推給任何人
+    #    - 本案飼主按過「不是我的寶貝」的通報，不再出現在本案的通知欄
+    sighting_rows = conn.execute(
+        """
         SELECT id, species, size, fur_length, accessory, accessory_color,
                fur_color, special_mark, special_mark_note, photo_1, lat, lng, description,
                sighting_time, status, matched_lost_id
@@ -866,11 +1270,9 @@ def get_lost_notifications(lost_id):
           AND id NOT IN (
               SELECT sighting_id FROM sighting_rejections WHERE lost_id = %s
           )
-    """,
-      (lost_id,),
-  )
-  sighting_rows = cursor.fetchall()
-  conn.close()
+        """,
+        (lost_id,),
+    ).fetchall()
 
   notifications = []
   for row in sighting_rows:
@@ -902,7 +1304,6 @@ def get_lost_notifications(lost_id):
 
   return (
       jsonify({
-          "lost_id": lost_id,
           "notification_count": len(notifications),
           "notifications": notifications,
       }),
@@ -910,31 +1311,29 @@ def get_lost_notifications(lost_id):
   )
 
 
-@app.route(
-    "/api/lost_reports/<int:lost_id>/sightings/<int:sighting_id>", methods=["GET"]
-)
-def get_sighting_for_lost(lost_id, sighting_id):
-  """詳情頁資料：一則公告 + 一筆通報 + 兩者的比對結果與特徵並排。
+@app.route("/api/owner/<token>/sightings/<int:sighting_id>", methods=["GET"])
+def owner_get_sighting(token, sighting_id):
+  """詳情頁資料：本案公告 + 一筆通報 + 兩者的比對結果與特徵並排。
 
   距離用後端精確座標計算，前端只拿到算好的公里數，拿不到精確座標。
   """
-  conn = get_db_connection()
-  lost = conn.execute(
-      f"SELECT {LOST_PUBLIC_FIELDS}, lat_precise, lng_precise FROM lost_reports WHERE id = %s",
-      (lost_id,),
-  ).fetchone()
-  sighting = conn.execute(
-      f"SELECT {SIGHTING_PUBLIC_FIELDS}, lat, lng FROM sightings WHERE id = %s",
-      (sighting_id,),
-  ).fetchone()
-  rejected = conn.execute(
-      "SELECT 1 FROM sighting_rejections WHERE lost_id = %s AND sighting_id = %s",
-      (lost_id, sighting_id),
-  ).fetchone()
-  conn.close()
+  with get_db_connection() as conn:
+    lost_id = find_lost_id_by_owner_token(conn, token)
+    if lost_id is None:
+      return owner_not_found()
+    lost = conn.execute(
+        f"SELECT {LOST_PUBLIC_FIELDS}, lat_precise, lng_precise FROM lost_reports WHERE id = %s",
+        (lost_id,),
+    ).fetchone()
+    sighting = conn.execute(
+        f"SELECT {SIGHTING_PUBLIC_FIELDS}, lat, lng FROM sightings WHERE id = %s",
+        (sighting_id,),
+    ).fetchone()
+    rejected = conn.execute(
+        "SELECT 1 FROM sighting_rejections WHERE lost_id = %s AND sighting_id = %s",
+        (lost_id, sighting_id),
+    ).fetchone()
 
-  if not lost:
-    return jsonify({"error": f"找不到走失公告 ID {lost_id}"}), 404
   if not sighting:
     return jsonify({"error": f"找不到通報 ID {sighting_id}"}), 404
 
@@ -960,61 +1359,51 @@ def get_sighting_for_lost(lost_id, sighting_id):
   }), 200
 
 
-@app.route("/api/lost_reports/<int:lost_id>/confirm_found", methods=["POST"])
-def confirm_found_pet(lost_id):
+@app.route("/api/owner/<token>/confirm_found", methods=["POST"])
+def owner_confirm_found(token):
   """飼主點擊「這是我的寶貝！」完成確認閉環：
 
   1. lost_reports.status -> '已尋回'（系統停止參與後續比對，地圖紅釘消失）
   2. 該公告對應的通報 sightings.status -> '飼主已確認'
   3. 回傳通知協尋者的確認訊息
   """
-  data = request.get_json() or {}
+  data = request.get_json(silent=True) or {}
   sighting_id = data.get("sighting_id")
 
-  conn = get_db_connection()
-  cursor = conn.cursor()
+  with get_db_connection() as conn:
+    lost_id = find_lost_id_by_owner_token(conn, token)
+    if lost_id is None:
+      return owner_not_found()
 
-  lost = cursor.execute(
-      "SELECT status FROM lost_reports WHERE id = %s", (lost_id,)
-  ).fetchone()
-  if not lost:
-    conn.close()
-    return jsonify({"error": f"找不到走失公告 ID {lost_id}"}), 404
-  if lost["status"] != "尋找中":
-    conn.close()
-    return jsonify({"error": f"這則公告已經是「{lost['status']}」，不能重複確認"}), 409
-  if sighting_id and not cursor.execute(
-      "SELECT 1 FROM sightings WHERE id = %s", (sighting_id,)
-  ).fetchone():
-    conn.close()
-    return jsonify({"error": f"找不到通報 ID {sighting_id}"}), 404
+    lost = conn.execute(
+        "SELECT status FROM lost_reports WHERE id = %s", (lost_id,)
+    ).fetchone()
+    if lost["status"] != "尋找中":
+      return jsonify({"error": f"這則公告已經是「{lost['status']}」，不能重複確認"}), 409
+    if sighting_id and not conn.execute(
+        "SELECT 1 FROM sightings WHERE id = %s", (sighting_id,)
+    ).fetchone():
+      return jsonify({"error": f"找不到通報 ID {sighting_id}"}), 404
 
-  # 1. 將走失公告改為「已尋回」
-  cursor.execute(
-      "UPDATE lost_reports SET status = '已尋回' WHERE id = %s", (lost_id,)
-  )
+    # 1. 將走失公告改為「已尋回」
+    conn.execute("UPDATE lost_reports SET status = '已尋回' WHERE id = %s", (lost_id,))
 
-  # 2. 若有指定被確認的通報 ID，將其改為「飼主已確認」
-  if sighting_id:
-    cursor.execute(
-        "UPDATE sightings SET status = '飼主已確認', matched_lost_id = %s WHERE"
-        " id = %s",
-        (lost_id, sighting_id),
-    )
-  else:
-    # 若未指定特定通報，將所有關聯該公告的通報皆更新
-    cursor.execute(
-        "UPDATE sightings SET status = '飼主已確認' WHERE matched_lost_id = %s",
-        (lost_id,),
-    )
-
-  conn.commit()
-  conn.close()
+    # 2. 若有指定被確認的通報 ID，將其改為「飼主已確認」
+    if sighting_id:
+      conn.execute(
+          "UPDATE sightings SET status = '飼主已確認', matched_lost_id = %s WHERE id = %s",
+          (lost_id, sighting_id),
+      )
+    else:
+      # 若未指定特定通報，將所有關聯該公告的通報皆更新
+      conn.execute(
+          "UPDATE sightings SET status = '飼主已確認' WHERE matched_lost_id = %s",
+          (lost_id,),
+      )
 
   return (
       jsonify({
           "message": "恭喜！已確認尋回寶貝，案件正式結案！",
-          "lost_id": lost_id,
           "lost_status": "已尋回",
           "sighting_status": "飼主已確認",
       }),
@@ -1022,8 +1411,8 @@ def confirm_found_pet(lost_id):
   )
 
 
-@app.route("/api/lost_reports/<int:lost_id>/reject_sighting", methods=["POST"])
-def reject_sighting(lost_id):
+@app.route("/api/owner/<token>/reject_sighting", methods=["POST"])
+def owner_reject_sighting(token):
   """飼主點擊「不是我的寶貝」：
 
   1. 在 sighting_rejections 記下「這則公告排除了這筆通報」
@@ -1031,38 +1420,33 @@ def reject_sighting(lost_id):
   2. sightings.status -> '飼主已排除'（地圖上變成灰色圖釘）
      已被別的飼主確認的通報不改狀態，避免蓋掉「飼主已確認」
   """
-  data = request.get_json() or {}
+  data = request.get_json(silent=True) or {}
   sighting_id = data.get("sighting_id")
   if not sighting_id:
     return jsonify({"error": "缺少通報 ID (sighting_id)"}), 400
 
-  conn = get_db_connection()
-  cursor = conn.cursor()
-  if not cursor.execute("SELECT 1 FROM lost_reports WHERE id = %s", (lost_id,)).fetchone():
-    conn.close()
-    return jsonify({"error": f"找不到走失公告 ID {lost_id}"}), 404
-  if not cursor.execute("SELECT 1 FROM sightings WHERE id = %s", (sighting_id,)).fetchone():
-    conn.close()
-    return jsonify({"error": f"找不到通報 ID {sighting_id}"}), 404
+  with get_db_connection() as conn:
+    lost_id = find_lost_id_by_owner_token(conn, token)
+    if lost_id is None:
+      return owner_not_found()
+    if not conn.execute("SELECT 1 FROM sightings WHERE id = %s", (sighting_id,)).fetchone():
+      return jsonify({"error": f"找不到通報 ID {sighting_id}"}), 404
 
-  # ON CONFLICT DO NOTHING（取代 SQLite 的 INSERT OR IGNORE）：重複按也只會有一筆紀錄
-  cursor.execute(
-      """
+    # ON CONFLICT DO NOTHING（取代 SQLite 的 INSERT OR IGNORE）：重複按也只會有一筆紀錄
+    conn.execute(
+        """
         INSERT INTO sighting_rejections (lost_id, sighting_id) VALUES (%s, %s)
         ON CONFLICT (lost_id, sighting_id) DO NOTHING
-    """,
-      (lost_id, sighting_id),
-  )
-  cursor.execute(
-      "UPDATE sightings SET status = '飼主已排除' WHERE id = %s AND status != '飼主已確認'",
-      (sighting_id,),
-  )
-  conn.commit()
-  conn.close()
+        """,
+        (lost_id, sighting_id),
+    )
+    conn.execute(
+        "UPDATE sightings SET status = '飼主已排除' WHERE id = %s AND status != '飼主已確認'",
+        (sighting_id,),
+    )
 
   return jsonify({
       "message": "已記錄，這筆通報不會再出現在你的通知欄",
-      "lost_id": lost_id,
       "sighting_id": sighting_id,
       "sighting_status": "飼主已排除",
   }), 200

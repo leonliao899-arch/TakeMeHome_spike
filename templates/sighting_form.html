@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- 成功頁會顯示含 token 的追蹤連結：不把完整網址送給第三方 -->
+  <meta name="referrer" content="strict-origin">
   <title>目擊通報 - TakeMeHome</title>
 
   <!-- Leaflet：步驟 2 的小地圖（GPS 被拒絕時，改用點地圖選位置） -->
@@ -225,8 +227,8 @@
 </head>
 <body>
 
-  <h2>👀 目擊通報</h2>
-  <div class="progress">
+  <h2 id="formTitle">👀 目擊通報</h2>
+  <div class="progress" id="progressBar">
     <div id="prog-1" class="active">① 拍照</div>
     <div id="prog-2">② 確認資料</div>
     <div id="prog-3">③ 送出</div>
@@ -426,6 +428,9 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- LINE 綁定區塊（完成畫面用）：沒設定 Basic ID 時不會顯示 -->
+  <script>window.LINE_BOT_BASIC_ID = {{ line_bot_basic_id|tojson }};</script>
+  <script src="{{ url_for('static', filename='line_bind.js') }}"></script>
   <script>
     // ==========================================
     // 共用設定
@@ -462,7 +467,10 @@
           img.alt = '公告照片';
           document.getElementById('refPhoto').replaceWith(img);
         }
-        document.getElementById('refBanner').style.display = 'flex';
+        // 已經在完成畫面（例如從 LINE 回來還原的）就不再顯示參考公告
+        if (!document.body.classList.contains('is-done')) {
+          document.getElementById('refBanner').style.display = 'flex';
+        }
       } catch (err) { /* 參考資訊載入失敗不影響通報 */ }
     }
 
@@ -988,7 +996,7 @@
         accessory: acc,
         accessory_color: acc === '沒有' ? '無' : document.getElementById('accessory_color').value,
         special_mark: document.getElementById('special_mark').value,
-        // 選「其他」時的文字描述（只給飼主參考，不參與計分）
+        // 選「其他」時的文字描述（會用部位＋特徵關鍵字和飼主的描述比對）
         special_mark_note: document.getElementById('special_mark').value === '其他'
           ? document.getElementById('special_mark_note').value.trim() : '',
         lat: pickedLatLng ? pickedLatLng.lat : '',
@@ -1183,7 +1191,7 @@
         const res = await fetch(`/api/sightings/${sightingId}/match`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ lost_id: c.lost_id, score: c.appearance_score })
+          body: JSON.stringify({ lost_id: c.lost_id, tracking_token: trackingToken })
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || '指認失敗');
@@ -1215,9 +1223,38 @@
     }
 
     // ==========================================
-    // 完成畫面：誠實提示語＋追蹤連結
+    // 完成畫面（階段 3）：誠實提示語＋追蹤連結＋用 LINE 追蹤
+    // 完成狀態存進 sessionStorage：按「用 LINE 追蹤」跳去 LINE 再回來時，
+    // 瀏覽器可能重新載入這一頁，這時直接還原完成畫面，不會又看到空白表單。
     // ==========================================
+    const DONE_KEY = 'tmh_sighting_form_done';
+    const DONE_TTL_MS = 30 * 60 * 1000;   // 30 分鐘內回來都還原
+
+    function saveDoneState(mode, petName) {
+      try {
+        sessionStorage.setItem(DONE_KEY, JSON.stringify({
+          sighting_id: sightingId, tracking_token: trackingToken,
+          mode, pet_name: petName || '', saved_at: Date.now()
+        }));
+      } catch (e) { /* 略過 */ }
+    }
+
+    function loadDoneState() {
+      try {
+        const d = JSON.parse(sessionStorage.getItem(DONE_KEY) || 'null');
+        if (d && d.tracking_token && Date.now() - (d.saved_at || 0) < DONE_TTL_MS) return d;
+      } catch (e) { /* 略過 */ }
+      return null;
+    }
+
     function renderDone(mode, petName) {
+      saveDoneState(mode, petName);
+      // 完成畫面不需要進度列與參考公告
+      document.body.classList.add('is-done');
+      document.getElementById('progressBar').style.display = 'none';
+      document.getElementById('refBanner').style.display = 'none';
+      showScreen(3);
+
       const area = document.getElementById('resultArea');
       const trackUrl = `${location.origin}/track/${trackingToken}`;
       let msg;
@@ -1237,9 +1274,10 @@
             <div style="margin-top:6px"><a class="track-link" id="trackLink"></a></div>
             <button type="button" id="copyBtn" style="margin-top:8px; width:100%">📋 複製連結</button>
           </div>
+          <div id="lineArea"></div>
           <div class="done-links">
-            <a href="/?focus=sighting-${sightingId}" class="link-primary">🗺️ 到地圖看我的通報</a>
-            <a href="/sighting-form" class="link-secondary">再通報一筆</a>
+            <a href="/?focus=sighting-${Number(sightingId)}" class="link-primary">🗺️ 到地圖看我的通報</a>
+            <a href="/sighting-form" class="link-secondary" id="againLink">再通報一筆</a>
           </div>
         </div>
       `;
@@ -1251,6 +1289,12 @@
       link.href = trackUrl;
       link.textContent = trackUrl;
       document.getElementById('copyBtn').onclick = () => copyText(trackUrl);
+      document.getElementById('againLink').onclick = () => {
+        try { sessionStorage.removeItem(DONE_KEY); } catch (e) {}
+      };
+      if (window.TMH_LINE) {
+        TMH_LINE.render(document.getElementById('lineArea'), { token: trackingToken, kind: 'sighting' });
+      }
       window.scrollTo(0, 0);
     }
 
@@ -1265,8 +1309,16 @@
       }
     }
 
-    renderPhotos();
-    loadRefLost();
+    // 從 LINE 回來、或重新整理：30 分鐘內剛完成通報，就直接顯示完成畫面
+    const restored = loadDoneState();
+    if (restored) {
+      sightingId = restored.sighting_id;
+      trackingToken = restored.tracking_token;
+      renderDone(restored.mode, restored.pet_name);
+    } else {
+      renderPhotos();
+      loadRefLost();
+    }
   </script>
 </body>
 </html>

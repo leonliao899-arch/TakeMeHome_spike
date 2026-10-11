@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- 成功頁會顯示含 token 的案件連結：不把完整網址送給第三方 -->
+  <meta name="referrer" content="strict-origin">
   <title>發布走失公告</title>
 
   <!-- Leaflet：第四步的小地圖（定位被拒絕或不準時，改用點地圖選位置） -->
@@ -30,16 +32,6 @@
     button.btn-primary { background: #2563eb; color: white; border: none; font-weight: bold; }
     button:disabled { opacity: 0.6; cursor: wait; }
     .tag { font-size: 12px; color: #666; margin-top: 3px; }
-
-    .img-preview {
-      display: none;
-      max-width: 120px;
-      max-height: 120px;
-      margin-top: 8px;
-      border-radius: 6px;
-      border: 1px solid #ddd;
-      object-fit: cover;
-    }
 
     .input-error {
       border: 2px solid #dc2626 !important;
@@ -228,11 +220,41 @@
       color: #ffffff;
       border: none;
     }
+
+    /* ===== 發布成功畫面（整頁取代表單） ===== */
+    #successScreen { display: none; padding-top: 6px; }
+    .done-head { text-align: center; }
+    .done-head .big { font-size: 48px; }
+    .done-head .title { font-size: 20px; font-weight: bold; color: #166534; }
+    .done-head .sub { font-size: 14px; color: #475569; }
+    .case-code {
+      margin: 12px auto 0; text-align: center; font-size: 13px; color: #64748b;
+    }
+    .case-code strong { display: block; font-size: 24px; color: #0f172a; letter-spacing: 1px; }
+    .private-box {
+      margin-top: 14px; border: 1px solid #fde68a; background: #fffbeb; border-radius: 10px;
+      padding: 12px 14px;
+    }
+    .private-box .label { font-weight: bold; color: #92400e; font-size: 14px; }
+    .private-box .warn { font-size: 12px; color: #b45309; margin: 2px 0 8px; }
+    .private-link {
+      font-size: 12px; color: #334155; background: #fff; border: 1px solid #e2e8f0; border-radius: 6px;
+      padding: 8px; word-break: break-all; user-select: all; -webkit-user-select: all;
+    }
+    .private-box button { margin-top: 8px; width: 100%; font-size: 14px; background: #fff; border: 1px solid #cbd5e1; }
+    .done-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+    .done-actions a {
+      display: block; text-align: center; padding: 12px; border-radius: 8px;
+      text-decoration: none; font-weight: bold;
+    }
+    .done-actions .primary { background: #2563eb; color: #fff; }
+    .done-actions .secondary { border: 1px solid #cbd5e1; color: #475569; }
+    .done-actions .plain { color: #64748b; font-weight: normal; font-size: 14px; padding: 6px; }
   </style>
 </head>
 <body>
 
-  <h2>📢 發布走失公告 (Step <span id="step-indicator">1</span>/4)</h2>
+  <h2 id="formTitle">📢 發布走失公告 (Step <span id="step-indicator">1</span>/4)</h2>
 
   <form id="lostForm" onsubmit="return false;">
     <!-- ===== Step 1: 基本條件（加入寵物名字） ===== -->
@@ -429,11 +451,14 @@
 
       <div class="btn-group">
         <button type="button" onclick="prevStep(3)">⬅ 上一步</button>
-        <button type="button" class="btn-primary" onclick="openSummaryModal()">📢 確認發布走失公告</button>
+        <button type="button" class="btn-primary" id="openSummaryBtn" onclick="openSummaryModal()">📢 確認發布走失公告</button>
       </div>
       <div id="submit-status" style="margin-top: 15px; font-weight: bold; text-align: center;"></div>
     </div>
   </form>
+
+  <!-- ===== 發布成功畫面：送出成功後整頁換成這裡（內容由 renderSuccess() 產生） ===== -->
+  <div id="successScreen"></div>
 
   <!-- 自製確認摘要 Modal 彈窗 -->
   <div class="modal-overlay" id="summaryModal">
@@ -445,13 +470,23 @@
       </p>
       <div class="modal-actions">
         <button type="button" class="btn-cancel" onclick="closeSummaryModal()">返回修改</button>
-        <button type="button" class="btn-confirm" onclick="executeSubmit()">確認送出 🚀</button>
+        <button type="button" class="btn-confirm" id="confirmSubmitBtn" onclick="executeSubmit()">確認送出 🚀</button>
       </div>
     </div>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- LINE 綁定區塊（成功頁用）：沒設定 Basic ID 時不會顯示 -->
+  <script>window.LINE_BOT_BASIC_ID = {{ line_bot_basic_id|tojson }};</script>
+  <script src="{{ url_for('static', filename='line_bind.js') }}"></script>
   <script>
+    // 把使用者輸入的文字轉成純文字再放進 innerHTML，避免輸入的 HTML 被執行
+    function esc(value) {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
     function showStep(step) {
       document.querySelectorAll('.step-section').forEach(el => el.classList.remove('active'));
       document.getElementById('step-' + step).classList.add('active');
@@ -544,7 +579,8 @@
     const MAX_PHOTOS = 5;
     const MAX_SIDE = 1280;
     const JPEG_QUALITY = 0.8;
-    let photos = [];   // { blob: 壓縮後的 JPEG, url: 預覽網址, origSize: 原檔大小, bad: 防呆標記 }
+    // { blob: 壓縮後的 JPEG, url: 預覽網址, origSize: 原檔大小, bad: 防呆標記, path: 已上傳的網址 }
+    let photos = [];
 
     function formatBytes(n) {
       return n >= 1024 * 1024 ? (n / 1024 / 1024).toFixed(1) + 'MB' : Math.round(n / 1024) + 'KB';
@@ -590,7 +626,7 @@
       for (const file of files.slice(0, room)) {
         try {
           const blob = await compressImage(file);
-          photos.push({ blob, url: URL.createObjectURL(blob), origSize: file.size, bad: false });
+          photos.push({ blob, url: URL.createObjectURL(blob), origSize: file.size, bad: false, path: null });
         } catch (err) {
           setPhotoError('有一張照片無法讀取，請換一張（建議 jpg 或 png）');
         }
@@ -977,8 +1013,7 @@
       const accText = (acc === '沒有') ? '無' : `${accColor}${acc}`;
       const furColor = document.getElementById('fur_color').value;
       const mark = document.getElementById('special_mark').value;
-      const markNoteText = document.getElementById('special_mark_note').value.trim()
-        .replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+      const markNoteText = document.getElementById('special_mark_note').value.trim();
       const markText = (mark === '其他' && markNoteText) ? `其他（${markNoteText}）` : mark;
       const notes = document.getElementById('notes').value.trim() || '無';
 
@@ -987,21 +1022,24 @@
       const formattedTime = lostTime.replace('T', ' ');
       const privacyRadius = document.querySelector('input[name="privacy_radius"]:checked').value;
 
-      const summaryHTML = `
-        <div class="summary-item"><span class="summary-label">寵物名字</span><span class="summary-val">${petName}</span></div>
-        <div class="summary-item"><span class="summary-label">物種與體型</span><span class="summary-val">${species} (${size}型 / ${furLength})</span></div>
-        <div class="summary-item"><span class="summary-label">毛色色系</span><span class="summary-val">${furColor}</span></div>
-        <div class="summary-item"><span class="summary-label">配件特徵</span><span class="summary-val">${accText}</span></div>
-        <div class="summary-item"><span class="summary-label">特殊記號</span><span class="summary-val">${markText}</span></div>
-        <div class="summary-item"><span class="summary-label">備註描述</span><span class="summary-val">${notes}</span></div>
-        <div class="summary-item"><span class="summary-label">照片張數</span><span class="summary-val">${photoCount} 張</span></div>
-        <div class="summary-item"><span class="summary-label">走失座標</span><span class="summary-val">${lat}, ${lng}</span></div>
-        <div class="summary-item"><span class="summary-label">隱私模糊</span><span class="summary-val">偏移 ${privacyRadius} 公尺</span></div>
-        <div class="summary-item"><span class="summary-label">走失時間</span><span class="summary-val">${formattedTime}</span></div>
-        <div class="summary-item"><span class="summary-label">飼主信箱</span><span class="summary-val">${email}</span></div>
-      `;
-
-      document.getElementById('summaryContent').innerHTML = summaryHTML;
+      // 使用者輸入的文字一律經過 esc()，避免被當成 HTML 執行
+      const rows = [
+        ['寵物名字', petName],
+        ['物種與體型', `${species} (${size}型 / ${furLength})`],
+        ['毛色色系', furColor],
+        ['配件特徵', accText],
+        ['特殊記號', markText],
+        ['備註描述', notes],
+        ['照片張數', `${photoCount} 張`],
+        ['走失座標', `${lat}, ${lng}`],
+        ['隱私模糊', `偏移 ${privacyRadius} 公尺`],
+        ['走失時間', formattedTime],
+        ['飼主信箱', email]
+      ];
+      document.getElementById('summaryContent').innerHTML = rows.map(([label, val]) =>
+        `<div class="summary-item"><span class="summary-label">${esc(label)}</span><span class="summary-val">${esc(val)}</span></div>`
+      ).join('');
+      document.getElementById('confirmSubmitBtn').disabled = false;
       document.getElementById('summaryModal').style.display = 'flex';
     }
 
@@ -1014,29 +1052,145 @@
     // 沒有會員登入，這是讓飼主不用記網址也能回到案件頁的輕量做法；
     // 存取失敗（例如無痕模式）就略過，不影響發布
     // ==========================================
-    function saveMyCase(id, caseCode, petName) {
+    // token 是案件密鑰：沒有它就打不開案件頁，所以一定要存
+    function saveMyCase(id, caseCode, petName, ownerToken) {
       try {
         const list = JSON.parse(localStorage.getItem('myCases') || '[]')
           .filter(c => c.id !== id);
-        list.unshift({ id: id, case_code: caseCode, pet_name: petName });
+        list.unshift({ id: id, case_code: caseCode, pet_name: petName, token: ownerToken });
         localStorage.setItem('myCases', JSON.stringify(list.slice(0, 10)));
       } catch (e) { /* 無法存取就略過 */ }
     }
 
+    // ==========================================
+    // 🎉 發布成功畫面（階段 3）：整頁換掉表單
+    // 成功資料同時存進 sessionStorage：使用者按「用 LINE 追蹤」跳去 LINE 再回來，
+    // 瀏覽器可能重新載入這一頁，這時直接還原成功畫面，不會又看到空白表單。
+    // ==========================================
+    const DONE_KEY = 'tmh_lost_form_done';
+    const DONE_TTL_MS = 30 * 60 * 1000;   // 30 分鐘內回來都還原
+
+    function saveDoneState(result) {
+      try {
+        sessionStorage.setItem(DONE_KEY, JSON.stringify({ ...result, saved_at: Date.now() }));
+      } catch (e) { /* 無痕模式等無法存取就略過 */ }
+    }
+
+    function loadDoneState() {
+      try {
+        const d = JSON.parse(sessionStorage.getItem(DONE_KEY) || 'null');
+        if (d && d.owner_token && Date.now() - (d.saved_at || 0) < DONE_TTL_MS) return d;
+      } catch (e) { /* 略過 */ }
+      return null;
+    }
+
+    function renderSuccess(result) {
+      const caseUrl = `${location.origin}/case/${encodeURIComponent(result.owner_token)}`;
+      const mk = (tag, className, text) => {
+        const e = document.createElement(tag);
+        if (className) e.className = className;
+        if (text !== undefined) e.textContent = text;
+        return e;
+      };
+
+      // 1. 整頁換成成功畫面：表單、標題、彈窗都收起來
+      document.getElementById('formTitle').style.display = 'none';
+      document.getElementById('lostForm').style.display = 'none';
+      closeSummaryModal();
+      const screen = document.getElementById('successScreen');
+      screen.innerHTML = '';
+      screen.style.display = 'block';
+
+      // 2. 標題與案件編號
+      const head = mk('div', 'done-head');
+      head.appendChild(mk('div', 'big', '🎉'));
+      head.appendChild(mk('div', 'title', '公告發布成功！'));
+      head.appendChild(mk('div', 'sub', `「${result.pet_name || '寶貝'}」的走失公告已經標在地圖上了。`));
+      screen.appendChild(head);
+      const code = mk('div', 'case-code', '案件編號');
+      code.appendChild(mk('strong', '', result.case_code));
+      screen.appendChild(code);
+
+      // 3. 案件私人連結（可複製）
+      const box = mk('div', 'private-box');
+      box.appendChild(mk('div', 'label', '🔑 你的案件私人連結'));
+      box.appendChild(mk('div', 'warn', '請存起來、不要公開分享：知道這個連結的人就能操作這則案件。'));
+      const linkBox = mk('div', 'private-link', caseUrl);
+      box.appendChild(linkBox);
+      const copy = mk('button', '', '📋 複製連結');
+      copy.type = 'button';
+      copy.onclick = async () => {
+        try { await navigator.clipboard.writeText(caseUrl); copy.textContent = '✅ 已複製'; }
+        catch (e) {
+          const r = document.createRange(); r.selectNodeContents(linkBox);
+          const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+          copy.textContent = '請長按上方連結複製';
+        }
+      };
+      box.appendChild(copy);
+      screen.appendChild(box);
+
+      // 4. 用 LINE 追蹤（沒設定 Basic ID 時不會出現）＋綁定狀態標籤
+      const lineArea = mk('div');
+      screen.appendChild(lineArea);
+      if (window.TMH_LINE) TMH_LINE.render(lineArea, { token: result.owner_token, kind: 'owner' });
+
+      // 5. 下一步
+      const actions = mk('div', 'done-actions');
+      const open = mk('a', 'primary', '🔔 查看我的案件通知');
+      open.href = caseUrl;
+      actions.appendChild(open);
+      const back = mk('a', 'secondary', '🗺️ 回到地圖看我的公告');
+      back.href = `/?focus=lost-${Number(result.id)}`;
+      actions.appendChild(back);
+      const again = mk('a', 'plain', '＋ 發布另一則走失公告');
+      again.href = '/lost-form';
+      again.onclick = () => { try { sessionStorage.removeItem(DONE_KEY); } catch (e) {} };
+      actions.appendChild(again);
+      screen.appendChild(actions);
+
+      window.scrollTo(0, 0);
+    }
+
+    // ==========================================
+    // 🚀 送出（階段 5：防重複送出）
+    // 1. isSubmitting：送出中或已成功就不再送第二次；確認鈕同時鎖住
+    // 2. CLIENT_SUBMIT_ID：這張表單的送出編號，重試時沿用同一組。
+    //    就算第一次其實已經成功、只是回應在路上斷掉，後端也只會有一筆公告
+    // 3. 照片上傳過就記住網址，重試時不再重傳
+    // ==========================================
+    function newSubmitId() {
+      if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    }
+    const CLIENT_SUBMIT_ID = newSubmitId();
+
+    let isSubmitting = false;
     async function executeSubmit() {
+      if (isSubmitting) return;
+      isSubmitting = true;
+      const confirmBtn = document.getElementById('confirmSubmitBtn');
+      const openBtn = document.getElementById('openSummaryBtn');
+      confirmBtn.disabled = true;
+      openBtn.disabled = true;
       closeSummaryModal();
       const statusBox = document.getElementById('submit-status');
       statusBox.style.color = '#2563eb';
       statusBox.innerText = "⏳ 正在上傳照片並建立走失公告...";
 
       try {
-        const paths = [];
-        for (const p of photos) paths.push(await uploadPhoto(p.blob));
+        for (const p of photos) {
+          if (!p.path) p.path = await uploadPhoto(p.blob);
+        }
+        const paths = photos.map(p => p.path);
 
         const privacyRadius = document.querySelector('input[name="privacy_radius"]:checked').value;
         const notes = document.getElementById('notes').value.trim();
 
         const payload = {
+          client_submit_id: CLIENT_SUBMIT_ID,
           pet_name: document.getElementById('pet_name').value.trim(),
           species: document.getElementById('species').value,
           size: document.getElementById('size').value,
@@ -1066,30 +1220,36 @@
           body: JSON.stringify(payload)
         });
 
-        const result = await response.json();
+        const result = await response.json().catch(() => ({}));
 
         if (response.ok) {
-          // 把案件記在這支手機的瀏覽器裡，之後從地圖的「📂 我的案件」就能找回來
-          saveMyCase(result.id, result.case_code, payload.pet_name);
-          statusBox.style.color = '#16a34a';
-          statusBox.innerHTML = `
-            🎉 公告發布成功！<br>
-            案件編號：<strong>${result.case_code}</strong><br>
-            <br>
-            <a href="/case/${result.id}" style="display:block; padding:12px; background:#2563eb; color:#fff; border-radius:6px; text-decoration:none;">🔔 查看我的案件通知</a>
-            <div style="font-size:12px; color:#64748b; margin-top:6px;">請把案件頁加入書籤，之後有人通報才找得到</div>
-            <br>
-            <a href="/?focus=lost-${result.id}" style="color: #2563eb; font-weight: bold; text-decoration: underline;">👉 回到地圖看我的公告</a>
-          `;
+          // 成功：把案件（含密鑰）記在這支手機，之後從地圖的「📂 我的案件」就能找回來
+          const done = {
+            id: result.id, case_code: result.case_code,
+            owner_token: result.owner_token, pet_name: payload.pet_name
+          };
+          saveMyCase(done.id, done.case_code, done.pet_name, done.owner_token);
+          saveDoneState(done);
+          renderSuccess(done);   // 成功後 isSubmitting 維持 true，避免重複發布
         } else {
+          isSubmitting = false;
+          openBtn.disabled = false;
           statusBox.style.color = '#dc2626';
-          statusBox.innerText = `❌ 發布失敗：${result.error}`;
+          statusBox.innerText = `❌ 發布失敗：${result.error || '伺服器忙碌，請再試一次'}`;
         }
       } catch (err) {
+        isSubmitting = false;
+        openBtn.disabled = false;
         statusBox.style.color = '#dc2626';
         statusBox.innerText = `❌ ${err.message && err.message !== 'Failed to fetch' ? err.message : '發生連線錯誤，請檢查網路後再試一次'}`;
       }
     }
+
+    // 從 LINE 回來、或重新整理：30 分鐘內剛發布過，就直接顯示成功畫面
+    (function restoreSuccessScreen() {
+      const done = loadDoneState();
+      if (done) renderSuccess(done);
+    })();
   </script>
 
 </body>

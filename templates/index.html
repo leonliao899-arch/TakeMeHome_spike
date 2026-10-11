@@ -392,13 +392,14 @@
     }
 
     function renderMyCases() {
-      const cases = loadList('myCases');
+      // 舊版只存 id、沒有密鑰的紀錄已無法開啟（案件頁改用密鑰），直接略過
+      const cases = loadList('myCases').filter(c => c && c.token);
       if (cases.length === 0) return;
       document.getElementById('myCasesBtn').style.display = 'inline-block';
       const panel = document.getElementById('myCasesPanel');
       panel.innerHTML = '';
       addTitle(panel, '我發布的走失公告（點名字看通報通知）');
-      cases.forEach(c => addRow(panel, `/case/${Number(c.id)}`,
+      cases.forEach(c => addRow(panel, `/case/${encodeURIComponent(c.token)}`,
         `🐾 ${c.pet_name || '未命名'}`, c.case_code, 'lost', Number(c.id)));
     }
 
