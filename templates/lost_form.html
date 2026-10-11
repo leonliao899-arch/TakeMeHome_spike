@@ -112,6 +112,15 @@
     }
     .ai-evidence.show { display: block; }
 
+    /* 照片防呆：AI 判斷照片沒有貓狗或不是同一隻時的提示 */
+    .photo-guard {
+      display: none; margin-top: 12px; padding: 10px 12px; border-radius: 6px;
+      background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c;
+      font-size: 14px; font-weight: bold; line-height: 1.6;
+    }
+    .photo-guard.show { display: block; }
+    input[type="file"].input-error { padding: 4px; border-radius: 4px; }
+
     /* 自製確認摘要 Modal 彈窗樣式 */
     .modal-overlay {
       display: none;
@@ -281,6 +290,7 @@
         <button type="button" class="btn-primary" id="photo-next-btn" onclick="validatePhotosAndAnalyze()">下一步 ➔</button>
       </div>
       <div id="ai-status" class="ai-status"></div>
+      <div id="photo-guard" class="photo-guard"></div>
     </div>
 
     <!-- ===== Step 3: 外觀特徵（AI 預填，使用者確認／修改） ===== -->
@@ -290,7 +300,7 @@
       <div id="ai-banner" class="ai-banner"></div>
 
       <div class="form-group">
-        <label>配件<span class="required">*</span>：<span class="ai-badge" id="ai-badge-accessory">🤖 AI 預填</span></label>
+        <label>走失時的身上的配件<span class="required">*</span>：<span class="ai-badge" id="ai-badge-accessory">🤖 AI 預填</span></label>
         <select id="accessory" onchange="toggleAccessoryColor()">
           <option value="">-- 請選擇是否有配件 --</option>
           <option value="沒有">沒有</option>
@@ -335,7 +345,7 @@
 
       <div class="form-group">
         <label>特殊記號<span class="required">*</span>：<span class="ai-badge" id="ai-badge-special_mark">🤖 AI 預填</span></label>
-        <select id="special_mark">
+        <select id="special_mark" onchange="toggleMarkNote()">
           <option value="">-- 請選擇特殊記號 --</option>
           <option value="沒有">沒有</option>
           <option value="白襪子">白襪子</option>
@@ -348,6 +358,14 @@
         </select>
         <div class="ai-evidence" id="ai-ev-special_mark"></div>
         <div id="special-mark-error" class="error-text">請務必選擇是否有特殊記號！</div>
+      </div>
+
+      <!-- 特殊記號選「其他」時才出現：描述會用關鍵字規則跟協尋者的描述比對 -->
+      <div class="form-group" id="mark-note-group" style="display: none;">
+        <label>請描述特殊記號<span class="required">*</span>：</label>
+        <input type="text" id="special_mark_note" maxlength="50" placeholder="如：右耳有缺角、尾巴尖端是白色">
+        <div class="tag">請寫出「部位＋特徵」，例如「右耳缺角」「背上有疤」，系統比較容易比對到。</div>
+        <div id="mark-note-error" class="error-text">請描述寵物的特殊記號！</div>
       </div>
 
       <div class="form-group">
@@ -431,6 +449,16 @@
     function nextStep(step) { showStep(step); }
     function prevStep(step) { showStep(step); }
 
+    function toggleMarkNote() {
+      const show = document.getElementById('special_mark').value === '其他';
+      document.getElementById('mark-note-group').style.display = show ? 'block' : 'none';
+      if (!show) {
+        document.getElementById('special_mark_note').value = '';
+        document.getElementById('mark-note-error').style.display = 'none';
+        document.getElementById('special_mark_note').classList.remove('input-error');
+      }
+    }
+
     function toggleAccessoryColor() {
       const acc = document.getElementById('accessory').value;
       const colorGroup = document.getElementById('accessory-color-group');
@@ -492,6 +520,39 @@
     const AI_FIELDS = ['accessory', 'accessory_color', 'fur_color', 'special_mark'];
     const userEdited = {};          // 使用者手動改過的欄位，重新辨識時不覆蓋
     let lastAnalyzedKey = null;     // 照片沒換就不重複呼叫 AI（省錢）
+    let guardFailKey = null;        // 防呆沒通過的那組照片：沒換照片就不能往下走
+    let guardFailMessage = '';
+    const PHOTO_IDS = ['photo_1', 'photo_2', 'photo_3'];
+
+    // ==========================================
+    // 🛡️ 照片防呆：AI 判斷「沒有貓狗」或「不是同一隻」時擋在第二步
+    // ==========================================
+    function showPhotoGuard(message, badInputIds) {
+      const box = document.getElementById('photo-guard');
+      box.textContent = '🛡️ ' + message;
+      box.classList.add('show');
+      PHOTO_IDS.forEach(id => document.getElementById(id).classList.toggle('input-error', badInputIds.includes(id)));
+      // 有問題的是選填照片（第 2、3 張）時，提供一鍵移除，不必非得換一張
+      badInputIds.filter(id => id !== 'photo_1').forEach(id => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.style.cssText = 'display:block; margin-top:8px; font-size:13px;';
+        btn.textContent = `🗑 移除第 ${id.slice(-1)} 張`;
+        btn.onclick = () => {
+          const input = document.getElementById(id);
+          input.value = '';
+          previewImage(input, 'preview_' + id.slice(-1));
+          hidePhotoGuard();
+        };
+        box.appendChild(btn);
+      });
+      box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    function hidePhotoGuard() {
+      document.getElementById('photo-guard').classList.remove('show');
+      PHOTO_IDS.forEach(id => document.getElementById(id).classList.remove('input-error'));
+    }
 
     // 使用者手動改欄位 → 拿掉 AI 標記，並記住「這格是使用者自己選的」
     AI_FIELDS.forEach(id => {
@@ -555,6 +616,12 @@
       }
       setAiValue('fur_color', result.fields.fur_color);
       setAiValue('special_mark', result.fields.special_mark);
+      toggleMarkNote();
+      const markField = result.fields.special_mark || {};
+      const noteInput = document.getElementById('special_mark_note');
+      if (markField.value === '其他' && markField.evidence && !noteInput.value) {
+        noteInput.value = markField.evidence;   // AI 看到的描述只是草稿，飼主可以修改
+      }
 
       const filled = AI_FIELDS.filter(id => document.getElementById(id).classList.contains('ai-filled')).length;
       let msg = filled > 0
@@ -582,6 +649,10 @@
       errText.style.display = 'none';
 
       const key = photosKey();
+      if (key === guardFailKey) {      // 照片沒換，防呆仍不通過
+        showPhotoGuard(guardFailMessage, []);
+        return;
+      }
       if (key === lastAnalyzedKey) {   // 照片沒變，直接下一步
         nextStep(3);
         return;
@@ -591,30 +662,43 @@
       const status = document.getElementById('ai-status');
       btn.disabled = true;
       status.style.color = '#2563eb';
-      status.textContent = '🤖 AI 正在辨識照片中的毛色、配件與特殊記號…';
+      status.textContent = '🤖 AI 正在檢查照片並辨識毛色、配件與特殊記號…';
+      hidePhotoGuard();
+
+      // 實際送出的照片欄位（例如只有第 1、3 張），AI 回傳的「第幾張」要對應回這裡
+      const sentIds = PHOTO_IDS.filter(id => document.getElementById(id).files[0]);
+      let proceed = true;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 20000);   // 最多等 20 秒
 
       try {
         const formData = new FormData();
-        ['photo_1', 'photo_2', 'photo_3'].forEach(id => {
-          const f = document.getElementById(id).files[0];
-          if (f) formData.append(id, f);
-        });
+        sentIds.forEach(id => formData.append(id, document.getElementById(id).files[0]));
 
-        const res = await fetch('/api/analyze-photo', { method: 'POST', body: formData });
-        const data = await res.json();
+        const res = await fetch('/api/analyze-photo', { method: 'POST', body: formData, signal: controller.signal });
+        const data = await res.json().catch(() => ({}));
 
-        if (res.ok) {
+        if (res.ok && data.guard && !data.guard.ok) {
+          // 防呆不通過：不進下一步，標出有問題的照片，請飼主重新上傳
+          proceed = false;
+          guardFailKey = key;
+          guardFailMessage = data.guard.message;
+          const badIds = (data.guard.no_pet_photos || []).map(n => sentIds[n - 1]).filter(Boolean);
+          showPhotoGuard(data.guard.message, data.guard.mismatch ? sentIds : badIds);
+        } else if (res.ok) {
           applyAiResult(data);
           lastAnalyzedKey = key;
         } else {
+          // AI 沒設定或暫時失敗：無法檢查，但不擋住飼主
           showAiBanner('warn', `⚠️ ${data.error || 'AI 辨識失敗'}，請手動選擇下列欄位。`);
         }
       } catch (err) {
         showAiBanner('warn', '⚠️ AI 辨識連線失敗，請手動選擇下列欄位。');
       } finally {
+        clearTimeout(timer);
         btn.disabled = false;
         status.textContent = '';
-        nextStep(3);   // 不論 AI 成功與否都讓使用者繼續填
+        if (proceed) nextStep(3);   // 只有防呆不通過時才停在這一步
       }
     }
 
@@ -666,6 +750,18 @@
       } else {
         mark.classList.remove('input-error');
         markErr.style.display = 'none';
+      }
+
+      // 選「其他」時描述必填
+      const markNote = document.getElementById('special_mark_note');
+      const markNoteErr = document.getElementById('mark-note-error');
+      if (mark.value === '其他' && !markNote.value.trim()) {
+        markNote.classList.add('input-error');
+        markNoteErr.style.display = 'block';
+        isValid = false;
+      } else {
+        markNote.classList.remove('input-error');
+        markNoteErr.style.display = 'none';
       }
 
       if (!isValid) {
@@ -737,6 +833,7 @@
     function previewImage(inputElement, previewImgId) {
       const img = document.getElementById(previewImgId);
       const photo1Err = document.getElementById('photo1-error');
+      inputElement.classList.remove('input-error');
       if (inputElement.files && inputElement.files[0]) {
         img.src = URL.createObjectURL(inputElement.files[0]);
         img.style.display = 'block';
@@ -811,6 +908,9 @@
       const accText = (acc === '沒有') ? '無' : `${accColor}${acc}`;
       const furColor = document.getElementById('fur_color').value;
       const mark = document.getElementById('special_mark').value;
+      const markNoteText = document.getElementById('special_mark_note').value.trim()
+        .replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+      const markText = (mark === '其他' && markNoteText) ? `其他（${markNoteText}）` : mark;
       const notes = document.getElementById('notes').value.trim() || '無';
 
       const p1 = document.getElementById('photo_1').files.length > 0;
@@ -826,7 +926,7 @@
         <div class="summary-item"><span class="summary-label">物種與體型</span><span class="summary-val">${species} (${size}型 / ${furLength})</span></div>
         <div class="summary-item"><span class="summary-label">毛色色系</span><span class="summary-val">${furColor}</span></div>
         <div class="summary-item"><span class="summary-label">配件特徵</span><span class="summary-val">${accText}</span></div>
-        <div class="summary-item"><span class="summary-label">特殊記號</span><span class="summary-val">${mark}</span></div>
+        <div class="summary-item"><span class="summary-label">特殊記號</span><span class="summary-val">${markText}</span></div>
         <div class="summary-item"><span class="summary-label">備註描述</span><span class="summary-val">${notes}</span></div>
         <div class="summary-item"><span class="summary-label">照片張數</span><span class="summary-val">${photoCount} 張 (全身照必填)</span></div>
         <div class="summary-item"><span class="summary-label">走失座標</span><span class="summary-val">${lat}, ${lng}</span></div>
@@ -880,6 +980,8 @@
           accessory_color: document.getElementById('accessory_color') ? document.getElementById('accessory_color').value : '無',
           fur_color: document.getElementById('fur_color').value,
           special_mark: document.getElementById('special_mark').value,
+          special_mark_note: document.getElementById('special_mark').value === '其他'
+            ? document.getElementById('special_mark_note').value.trim() : '',
           notes: notes,
           photo_1: photoPath1,
           photo_2: photoPath2,

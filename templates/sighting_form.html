@@ -47,6 +47,38 @@
       background: #fee2e2; border-radius: 10px; padding: 1px 8px; margin-bottom: 4px;
     }
 
+    /* ===== AI 預填 ===== */
+    .ai-status {
+      margin-top: 12px; font-size: 14px; font-weight: bold; color: #2563eb; text-align: center;
+    }
+    .ai-status button {
+      margin-top: 8px; font-size: 13px; padding: 6px 12px; background: #fff;
+      border: 1px solid #cbd5e1; color: #475569; font-weight: normal;
+    }
+    .ai-banner {
+      display: none; font-size: 13px; border-radius: 6px; padding: 10px 12px;
+      margin-bottom: 14px; line-height: 1.6;
+    }
+    .ai-banner.ok { display: block; background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
+    .ai-banner.warn { display: block; background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
+    .ai-badge {
+      display: none; font-size: 11px; font-weight: normal; background: #dbeafe; color: #1d4ed8;
+      border-radius: 10px; padding: 1px 8px; margin-left: 6px; vertical-align: middle;
+    }
+    .ai-badge.show { display: inline-block; }
+    select.ai-filled { border: 2px solid #93c5fd; background-color: #f8fbff; }
+    .ai-note { display: none; font-size: 12px; margin-top: 4px; color: #64748b; }
+    .ai-note.show { display: block; }
+    .ai-note.warn { color: #b45309; font-weight: bold; }
+    /* 照片防呆：被 AI 判斷有問題的照片加紅框 */
+    .photo-slot.bad { outline: 3px solid #dc2626; outline-offset: -3px; }
+    .guard-box {
+      display: none; margin-top: 10px; padding: 10px 12px; border-radius: 6px;
+      background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c;
+      font-size: 14px; font-weight: bold; line-height: 1.6;
+    }
+    .guard-box.show { display: block; }
+
     .screen { display: none; }
     .screen.active { display: block; }
 
@@ -215,6 +247,7 @@
     <div class="hint">
       <div>📷 拍 1～3 張照片，請盡量讓寵物清楚入鏡。</div>
       <div>🙈 請避免拍到路人臉部或車牌，若不小心拍到可以刪掉重選。</div>
+      <div>🤖 按「下一步」後，AI 會先檢查照片，並幫你預填物種、毛色與配件。</div>
     </div>
 
     <div class="photo-grid" id="photoGrid"></div>
@@ -225,19 +258,23 @@
     <div class="error-text" id="photo-error"></div>
 
     <button type="button" class="btn-primary btn-full" id="toStep2Btn" onclick="goStep2()">下一步 ➔</button>
+    <div class="ai-status" id="aiStatus"></div>
+    <div class="guard-box" id="guardBox"></div>
   </div>
 
   <!-- ===== 步驟 2：檢視並修正（特徵＋時間地點＋選填 email，同一個畫面） ===== -->
   <div class="screen" id="screen-2">
     <h3>🐾 這隻動物長怎樣？</h3>
     <div class="hint">看不清楚沒關係，選你最有把握的就好。</div>
+    <div class="ai-banner" id="aiBanner"></div>
 
     <div class="form-group">
-      <label class="field-label">物種<span class="required">*</span></label>
+      <label class="field-label">物種<span class="required">*</span><span class="ai-badge" id="ai-badge-species">🤖 AI 預填</span></label>
       <div class="chips" id="species">
         <label><input type="radio" name="species" value="狗">🐶 狗</label>
         <label><input type="radio" name="species" value="貓">🐱 貓</label>
       </div>
+      <div class="ai-note" id="ai-note-species"></div>
       <div class="error-text" id="species-error">請選擇物種</div>
     </div>
 
@@ -263,7 +300,7 @@
 
     <!-- 下拉選項的 value 必須與飼主表單一字不差，matcher.py 是用字串完全相等比對 -->
     <div class="form-group">
-      <label class="field-label" for="fur_color">毛色色系<span class="required">*</span></label>
+      <label class="field-label" for="fur_color">毛色色系<span class="required">*</span><span class="ai-badge" id="ai-badge-fur_color">🤖 AI 預填</span></label>
       <select id="fur_color">
         <option value="">-- 請選擇毛色色系 --</option>
         <option value="黑/深棕">黑 / 深棕</option>
@@ -272,11 +309,12 @@
         <option value="虎斑/花紋">虎斑 / 花紋</option>
         <option value="三花/雙色">三花 / 雙色</option>
       </select>
+      <div class="ai-note" id="ai-note-fur_color"></div>
       <div class="error-text" id="fur_color-error">請選擇毛色色系</div>
     </div>
 
     <div class="form-group">
-      <label class="field-label" for="accessory">配件<span class="required">*</span></label>
+      <label class="field-label" for="accessory">配件<span class="required">*</span><span class="ai-badge" id="ai-badge-accessory">🤖 AI 預填</span></label>
       <select id="accessory" onchange="toggleAccessoryColor()">
         <option value="">-- 請選擇是否有配件 --</option>
         <option value="沒有">沒有 / 沒看到</option>
@@ -286,11 +324,12 @@
         <option value="名牌">名牌</option>
         <option value="其他">其他</option>
       </select>
+      <div class="ai-note" id="ai-note-accessory"></div>
       <div class="error-text" id="accessory-error">請選擇配件</div>
     </div>
 
     <div class="form-group" id="accessory-color-group" style="display:none;">
-      <label class="field-label" for="accessory_color">配件顏色<span class="required">*</span></label>
+      <label class="field-label" for="accessory_color">配件顏色<span class="required">*</span><span class="ai-badge" id="ai-badge-accessory_color">🤖 AI 預填</span></label>
       <select id="accessory_color">
         <option value="">-- 請選擇配件顏色 --</option>
         <option value="紅色">紅色</option>
@@ -300,12 +339,13 @@
         <option value="黑色">黑色</option>
         <option value="其他">其他</option>
       </select>
+      <div class="ai-note" id="ai-note-accessory_color"></div>
       <div class="error-text" id="accessory_color-error">請選擇配件顏色</div>
     </div>
 
     <div class="form-group">
       <label class="field-label" for="special_mark">特殊記號<span class="required">*</span></label>
-      <select id="special_mark">
+      <select id="special_mark" onchange="toggleMarkNote()">
         <option value="">-- 請選擇特殊記號 --</option>
         <option value="看不清楚">看不清楚</option>
         <option value="沒有">沒有</option>
@@ -319,6 +359,14 @@
       </select>
       <div class="tag">距離太遠、天色太暗看不到就選「看不清楚」，不會影響通報。</div>
       <div class="error-text" id="special_mark-error">請選擇特殊記號（看不到可選「看不清楚」）</div>
+    </div>
+
+    <!-- 特殊記號選「其他」時才出現，讓目擊者用文字描述 -->
+    <div class="form-group" id="mark-note-group" style="display:none;">
+      <label class="field-label" for="special_mark_note">請描述特殊記號<span class="required">*</span></label>
+      <input type="text" id="special_mark_note" maxlength="50" placeholder="如：右耳有缺角、背上有一塊白斑">
+      <div class="tag">請寫出「部位＋特徵」，例如「右耳缺角」「背上有疤」，系統比較容易比對到飼主的公告。</div>
+      <div class="error-text" id="special_mark_note-error">請描述你看到的特殊記號</div>
     </div>
 
     <h3>📍 在哪裡、什麼時候看到？</h3>
@@ -339,8 +387,8 @@
     </div>
 
     <div class="form-group">
-      <label class="field-label" for="description">目擊描述 <span class="optional">(選填)</span></label>
-      <input type="text" id="description" maxlength="100" placeholder="如：躲在路邊紅色轎車車底">
+      <label class="field-label" for="description">發現環境 <span class="optional">(選填)</span></label>
+      <input type="text" id="description" maxlength="100" placeholder="如：躲在路邊紅色轎車車底、公園草叢裡">
     </div>
 
     <h3>💌 想知道牠有沒有回家？</h3>
@@ -434,7 +482,7 @@
     function setError(id, show, msg) {
       const errEl = document.getElementById(id + '-error');
       const field = document.getElementById(id);
-      if (!errEl) return;   // 選填欄位（如目擊描述）沒有錯誤提示
+      if (!errEl) return;   // 選填欄位（如發現環境）沒有錯誤提示
       if (msg) errEl.textContent = msg;
       errEl.classList.toggle('show', show);
       if (field) field.classList.toggle('input-error', show);
@@ -463,8 +511,9 @@
           canvas.width = Math.round(img.naturalWidth * scale);
           canvas.height = Math.round(img.naturalHeight * scale);
           canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+          const brightness = measureBrightness(img);
           URL.revokeObjectURL(srcUrl);
-          canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('壓縮失敗')),
+          canvas.toBlob(blob => blob ? resolve({ blob, brightness }) : reject(new Error('壓縮失敗')),
                         'image/jpeg', JPEG_QUALITY);
         };
         img.onerror = () => {
@@ -475,11 +524,34 @@
       });
     }
 
+    /**
+     * 照片亮度（0 暗 ~ 255 亮）：縮成 32×32 後取所有像素的平均亮度。
+     * 這是簡單的影像統計、不是 AI。照片很暗時毛色最容易看錯（夜間虎斑看起來像黑色），
+     * 所以就算 AI 很有把握，也不自動填毛色，改請協尋者自己確認。
+     */
+    function measureBrightness(img) {
+      try {
+        const c = document.createElement('canvas');
+        c.width = c.height = 32;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(img, 0, 0, 32, 32);
+        const d = ctx.getImageData(0, 0, 32, 32).data;
+        let sum = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];   // 人眼感知亮度公式
+        }
+        return Math.round(sum / (d.length / 4));
+      } catch (e) {
+        return null;   // 算不出來就不參考
+      }
+    }
+
     async function handlePhotoSelect(input) {
       const files = Array.from(input.files || []);
       input.value = '';   // 清空，讓同一張照片刪掉後還能再選
       if (files.length === 0) return;
 
+      hideGuard();   // 換了照片，上一次的防呆結果不再適用
       const room = MAX_PHOTOS - photos.length;
       if (files.length > room) {
         setError('photo', true, `最多 3 張，已幫你保留前 ${room} 張`);
@@ -493,8 +565,8 @@
 
       for (const file of files.slice(0, room)) {
         try {
-          const blob = await compressImage(file);
-          photos.push({ blob, url: URL.createObjectURL(blob), origSize: file.size });
+          const { blob, brightness } = await compressImage(file);
+          photos.push({ blob, brightness, url: URL.createObjectURL(blob), origSize: file.size });
         } catch (err) {
           setError('photo', true, '有一張照片無法讀取，請換一張（建議 jpg 或 png）');
         }
@@ -507,6 +579,7 @@
       URL.revokeObjectURL(photos[index].url);
       photos.splice(index, 1);
       setError('photo', false);
+      document.getElementById('guardBox').classList.remove('show');
       renderPhotos();
     }
 
@@ -515,7 +588,7 @@
       grid.innerHTML = '';
       photos.forEach((p, i) => {
         const slot = document.createElement('div');
-        slot.className = 'photo-slot';
+        slot.className = 'photo-slot' + (p.bad ? ' bad' : '');
         slot.innerHTML = `<img alt="目擊照片 ${i + 1}">
           <div class="size-tag"></div>
           <button type="button" class="remove-btn" aria-label="刪除這張">×</button>`;
@@ -536,14 +609,235 @@
         `已選 ${photos.length} / 3 張（至少 1 張）`;
     }
 
-    function goStep2() {
+    async function goStep2() {
       if (photos.length === 0) {
         setError('photo', true, '請至少拍 1 張照片');
         return;
       }
       setError('photo', false);
-      showScreen(2);
+      // 只有「照片防呆沒通過」會停在這一步；AI 失敗、逾時、略過都會往下走
+      const passed = await runAiPrefill();
+      if (passed) showScreen(2);
     }
+
+    // ==========================================
+    // 🤖 AI 預填（護欄：只建議不決定、失敗退回手填、輸出限定下拉選項、只預填高信心）
+    // ==========================================
+    // 協尋者端預填：物種、毛色、配件（特殊記號由目擊者自己判斷，不預填）
+    const AI_FIELDS = ['fur_color', 'accessory', 'accessory_color'];
+    const AI_TIMEOUT_MS = 15000;      // 現場網路不穩時最多等 15 秒
+    const DARK_THRESHOLD = 60;        // 平均亮度低於這個值視為「照片偏暗」
+    const userEdited = {};            // 協尋者手動改過的欄位，重新辨識時不覆蓋
+    const aiFilled = {};              // AI 實際填進表單的值：{ 欄位: { value, confidence } }
+    let aiRaw = null;                 // AI 原始回應（另存到資料庫，不參與計分）
+    let lastAnalyzedKey = null;       // 照片沒換就不重複呼叫 AI（省錢）
+    let aiController = null;
+    let guardFailKey = null;          // 防呆沒通過的那組照片：沒換照片就不能往下走
+    let guardFailMessage = '';
+
+    function photosKey() {
+      return photos.map(p => `${p.blob.size}:${p.url}`).join('|');
+    }
+
+    function skipAi() {
+      if (aiController) aiController.abort();
+    }
+
+    // ==========================================
+    // 🛡️ 照片防呆：AI 判斷「沒有貓狗」或「不是同一隻」時，請協尋者重新上傳
+    // ==========================================
+    function showGuard(message) {
+      const box = document.getElementById('guardBox');
+      box.textContent = '🛡️ ' + message;
+      box.classList.add('show');
+    }
+    function hideGuard() {
+      document.getElementById('guardBox').classList.remove('show');
+      photos.forEach(p => p.bad = false);
+    }
+
+    // 回傳 true＝可以進下一步；false＝照片防呆沒通過
+    async function runAiPrefill() {
+      const key = photosKey();
+      if (key === guardFailKey) { showGuard(guardFailMessage); return false; }
+      if (key === lastAnalyzedKey) return true;
+      hideGuard();
+      renderPhotos();
+
+      const btn = document.getElementById('toStep2Btn');
+      const status = document.getElementById('aiStatus');
+      btn.disabled = true;
+      status.innerHTML = '🤖 AI 正在看照片…<br><button type="button" onclick="skipAi()">略過，我自己填</button>';
+
+      aiController = new AbortController();
+      const timer = setTimeout(() => aiController.abort(), AI_TIMEOUT_MS);
+      try {
+        const formData = new FormData();
+        photos.forEach((p, i) => formData.append(`photo_${i + 1}`, p.blob, `photo_${i + 1}.jpg`));
+        const res = await fetch('/api/analyze-photo', {
+          method: 'POST', body: formData, signal: aiController.signal
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.guard && !data.guard.ok) {
+          // 防呆沒通過：標出有問題的照片，不讓錯誤資料進到後台
+          guardFailKey = key;
+          guardFailMessage = data.guard.message;
+          photos.forEach((p, i) => {
+            p.bad = data.guard.mismatch || (data.guard.no_pet_photos || []).includes(i + 1);
+          });
+          renderPhotos();
+          showGuard(data.guard.message + ' 可以按照片右上角的 × 刪掉，再重新拍一張。');
+          return false;
+        }
+        if (res.ok) {
+          applyAiResult(data);
+          lastAnalyzedKey = key;
+        } else {
+          showAiBanner('warn', `⚠️ ${data.error || 'AI 辨識暫時無法使用，請手動填寫'}。`);
+        }
+      } catch (err) {
+        // 逾時、按了略過、斷線：都靜默退回手填
+        showAiBanner('warn', '⚠️ 這次沒有使用 AI 預填，請依你看到的手動選擇。');
+      } finally {
+        clearTimeout(timer);
+        btn.disabled = false;
+        status.innerHTML = '';
+      }
+      return true;
+    }
+
+    function showAiBanner(type, text) {
+      const banner = document.getElementById('aiBanner');
+      banner.className = 'ai-banner ' + type;
+      banner.textContent = text;
+    }
+
+    function setAiNote(id, text, warn) {
+      const note = document.getElementById('ai-note-' + id);
+      note.textContent = text || '';
+      note.className = 'ai-note' + (text ? ' show' : '') + (warn ? ' warn' : '');
+    }
+
+    function clearAiMark(id) {
+      document.getElementById(id).classList.remove('ai-filled');
+      document.getElementById('ai-badge-' + id).classList.remove('show');
+    }
+
+    // 把 AI 的值填進表單並加上藍框與徽章
+    function fillByAi(id, value, confidence, note, badgeText) {
+      const el = document.getElementById(id);
+      el.value = value;
+      el.classList.add('ai-filled');
+      el.classList.remove('input-error');
+      const badge = document.getElementById('ai-badge-' + id);
+      badge.textContent = badgeText || '🤖 AI 預填';
+      badge.classList.add('show');
+      aiFilled[id] = { value, confidence };
+      setAiNote(id, note, false);
+      setError(id, false);
+    }
+
+    function averageBrightness() {
+      const vals = photos.map(p => p.brightness).filter(v => typeof v === 'number');
+      return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
+    }
+
+    function applyAiResult(result) {
+      const brightness = averageBrightness();
+      const isDark = brightness !== null && brightness < DARK_THRESHOLD;
+      aiRaw = { ...result, brightness, is_dark: isDark };
+
+      if (!result.is_pet) {
+        showAiBanner('warn', '⚠️ AI 在照片中沒有清楚看到狗或貓，沒有自動預填，請依你看到的手動選擇。');
+        return;
+      }
+
+      const f = result.fields || {};
+      let filled = 0;
+
+      // 處理一個欄位：只有「高」信心才預填，其餘留空並提示
+      function handle(id) {
+        if (userEdited[id]) return;                 // 尊重協尋者自己的選擇
+        const r = f[id] || {};
+        delete aiFilled[id];
+        clearAiMark(id);
+
+        if (id === 'fur_color' && isDark) {
+          setAiNote(id, '🌙 照片偏暗，毛色容易看錯，請依你親眼看到的選擇。', false);
+          return;
+        }
+        if (r.value && r.confidence === '高') {
+          fillByAi(id, r.value, r.confidence, r.evidence ? `🔍 AI 看到：${r.evidence}` : '');
+          filled++;
+          return;
+        }
+        document.getElementById(id).value = '';
+        setAiNote(id, r.value ? '🤔 AI 不太確定，請依你看到的選擇。' : '', false);
+      }
+
+      handle('accessory');
+      toggleAccessoryColor();                       // 配件決定要不要顯示配件顏色
+      if (document.getElementById('accessory-color-group').style.display !== 'none') {
+        handle('accessory_color');
+      }
+      handle('fur_color');
+      if (handleSpecies(f.species)) filled++;
+
+      showAiBanner('ok', filled > 0
+        ? `🤖 AI 已依照片預填 ${filled} 個欄位（藍框）。AI 可能看錯，你親眼看過，以你的判斷為準。體型、毛長與特殊記號請自己選。`
+        : '🤖 AI 對這張照片沒有把握，請依你看到的手動選擇。');
+    }
+
+    // 物種是單選按鈕（不是下拉選單），另外處理；同樣只預填「高」信心
+    function handleSpecies(r) {
+      const badge = document.getElementById('ai-badge-species');
+      badge.classList.remove('show');
+      delete aiFilled.species;
+      if (userEdited.species || !r || !r.value) return false;
+      if (r.confidence !== '高') {
+        setAiNote('species', '🤔 AI 不太確定是狗還是貓，請依你看到的選擇。', false);
+        return false;
+      }
+      const radio = document.querySelector(`input[name="species"][value="${r.value}"]`);
+      if (!radio) return false;
+      radio.checked = true;
+      badge.classList.add('show');
+      aiFilled.species = { value: r.value, confidence: r.confidence };
+      setAiNote('species', r.evidence ? `🔍 AI 看到：${r.evidence}` : '', false);
+      setError('species', false);
+      return true;
+    }
+
+    document.querySelectorAll('input[name="species"]').forEach(radio => {
+      radio.addEventListener('change', () => {
+        userEdited.species = true;
+        document.getElementById('ai-badge-species').classList.remove('show');
+        const ai = aiFilled.species;
+        if (ai && radio.value !== ai.value) {
+          setAiNote('species', `照片看起來比較像「${ai.value}」，你確定是「${radio.value}」嗎？物種不同就不會比對到對方的公告。`, true);
+        } else {
+          setAiNote('species', '', false);
+        }
+      });
+    });
+
+    // 協尋者改掉 AI 高信心的值時，提醒一句；衝突交給有現場資訊的人決定，不用算術處理
+    AI_FIELDS.forEach(id => {
+      document.getElementById(id).addEventListener('change', () => {
+        const el = document.getElementById(id);
+        const ai = aiFilled[id];
+        userEdited[id] = true;
+        clearAiMark(id);
+        if (!ai) { setAiNote(id, '', false); return; }
+        if (el.value === ai.value) {
+          setAiNote(id, '', false);
+        } else if (ai.confidence === '高' && el.value) {
+          setAiNote(id, `照片看起來比較像「${ai.value}」，你確定是「${el.value}」嗎？你親眼看過，以你的判斷為準。`, true);
+        } else {
+          setAiNote(id, '', false);
+        }
+      });
+    });
 
     // ==========================================
     // 步驟 2：欄位、地點、時間
@@ -553,6 +847,15 @@
       return el ? el.value : '';
     }
 
+    function toggleMarkNote() {
+      const show = document.getElementById('special_mark').value === '其他';
+      document.getElementById('mark-note-group').style.display = show ? 'block' : 'none';
+      if (!show) {
+        document.getElementById('special_mark_note').value = '';
+        setError('special_mark_note', false);
+      }
+    }
+
     function toggleAccessoryColor() {
       const acc = document.getElementById('accessory').value;
       const group = document.getElementById('accessory-color-group');
@@ -560,6 +863,8 @@
         group.style.display = 'none';
         document.getElementById('accessory_color').value = '';
         setError('accessory_color', false);
+        clearAiMark('accessory_color');
+        setAiNote('accessory_color', '', false);
       } else {
         group.style.display = 'block';
       }
@@ -646,7 +951,11 @@
       if (acc && acc !== '沒有') {
         check('accessory_color', !!document.getElementById('accessory_color').value);
       }
-      check('special_mark', !!document.getElementById('special_mark').value);
+      const mark = document.getElementById('special_mark').value;
+      check('special_mark', !!mark);
+      if (mark === '其他') {
+        check('special_mark_note', !!document.getElementById('special_mark_note').value.trim());
+      }
       check('location', !!pickedLatLng);
 
       const t = timeInput.value;
@@ -679,12 +988,17 @@
         accessory: acc,
         accessory_color: acc === '沒有' ? '無' : document.getElementById('accessory_color').value,
         special_mark: document.getElementById('special_mark').value,
+        // 選「其他」時的文字描述（只給飼主參考，不參與計分）
+        special_mark_note: document.getElementById('special_mark').value === '其他'
+          ? document.getElementById('special_mark_note').value.trim() : '',
         lat: pickedLatLng ? pickedLatLng.lat : '',
         lng: pickedLatLng ? pickedLatLng.lng : '',
         // matcher.py 用 'YYYY-MM-DD HH:MM'，把 datetime-local 的 T 換成空格（後端也會再保險一次）
         sighting_time: timeInput.value.replace('T', ' '),
         description: document.getElementById('description').value.trim(),
-        contact_email: document.getElementById('contact_email').value.trim()
+        contact_email: document.getElementById('contact_email').value.trim(),
+        // AI 原始預填結果另存一份，用來統計協尋者改了多少；不參與計分
+        ai_prefill: aiRaw
       };
     }
 
@@ -699,10 +1013,10 @@
         ['物種／體型', `${f.species}（${f.size}型／${f.fur_length}）`],
         ['毛色色系', f.fur_color],
         ['配件', f.accessory === '沒有' ? '沒有 / 沒看到' : `${f.accessory_color}${f.accessory}`],
-        ['特殊記號', f.special_mark],
+        ['特殊記號', f.special_mark === '其他' ? `其他（${f.special_mark_note}）` : f.special_mark],
         ['目擊時間', f.sighting_time],
         ['目擊座標', `${f.lat}, ${f.lng}`],
-        ['目擊描述', f.description || '無'],
+        ['發現環境', f.description || '無'],
         ['你的 Email', f.contact_email || '未填（不會收到回饋信）']
       ];
       // 用 textContent 填值，避免使用者輸入的文字被當成 HTML 執行

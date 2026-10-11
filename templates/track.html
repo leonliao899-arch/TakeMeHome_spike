@@ -82,7 +82,7 @@
       <div><span>目擊時間</span><span>{{ sighting.sighting_time }}</span></div>
       <div><span>物種／體型</span><span>{{ sighting.species }}（{{ sighting.size }}型）</span></div>
       <div><span>毛色</span><span>{{ sighting.fur_color }}</span></div>
-      <div><span>目擊描述</span><span>{{ sighting.description or '無' }}</span></div>
+      <div><span>發現環境</span><span>{{ sighting.description or '無' }}</span></div>
       {% if sighting.case_code %}
         <div><span>關聯公告</span><span>{{ sighting.pet_name or '' }} {{ sighting.case_code }}</span></div>
       {% endif %}
