@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>通報詳情 - TakeMeHome</title>
+  <!-- Leaflet：顯示目擊地點的小地圖 -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     * { box-sizing: border-box; }
     body {
@@ -61,6 +63,14 @@
     .st-unclear { background: #f8fafc; }
     .st-diff { background: #fef2f2; }
 
+    #spotMap { height: 230px; border-radius: 8px; border: 1px solid #cbd5e1; z-index: 0; }
+    .map-legend-row { font-size: 12px; color: #64748b; margin-top: 6px; }
+    .map-legend-row span { margin-right: 12px; }
+    .nav-btn {
+      display: block; margin: 10px 0 12px; padding: 12px; border-radius: 8px; text-align: center;
+      background: #2563eb; color: #fff; font-weight: bold; text-decoration: none;
+    }
+    .desc-label { font-size: 13px; color: #64748b; margin-bottom: 4px; }
     .desc-box {
       background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 12px;
       font-size: 15px;
@@ -114,6 +124,7 @@
     </div>
   </div>
 
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     const LOST_ID = {{ lost_id }};
     const SIGHTING_ID = {{ sighting_id }};
@@ -233,8 +244,26 @@
       box.appendChild(table);
 
       // 4. 目擊位置描述
-      box.appendChild(el('h3', '', '📍 目擊位置描述'));
-      box.appendChild(el('div', 'desc-box', sighting.description || '協尋者沒有填寫描述'));
+      // 4. 目擊地點：小地圖＋導航按鈕＋發現環境（飼主前往現場確認，就是 O2O 的關鍵一步）
+      box.appendChild(el('h3', '', '📍 目擊地點'));
+      const mapDiv = el('div');
+      mapDiv.id = 'spotMap';
+      box.appendChild(mapDiv);
+      const legend = el('div', 'map-legend-row');
+      legend.appendChild(el('span', '', '🔵 目擊地點'));
+      legend.appendChild(el('span', '', '🔴 你的走失地點（公開模糊位置）'));
+      box.appendChild(legend);
+
+      const sLat = Number(sighting.lat), sLng = Number(sighting.lng);
+      const nav = el('a', 'nav-btn', '🧭 用 Google 地圖導航到目擊地點');
+      nav.href = `https://www.google.com/maps/dir/?api=1&destination=${sLat},${sLng}`;
+      nav.target = '_blank';
+      nav.rel = 'noopener';
+      box.appendChild(nav);
+
+      box.appendChild(el('div', 'desc-label', '發現環境'));
+      box.appendChild(el('div', 'desc-box', sighting.description || '協尋者沒有填寫發現環境'));
+      drawSpotMap(sLat, sLng, Number(lost.lat_public), Number(lost.lng_public));
 
       // 5. 操作按鈕（依狀態決定要不要顯示）
       const actions = el('div');
@@ -260,6 +289,28 @@
         wrap.appendChild(yes);
         wrap.appendChild(no);
         actions.appendChild(wrap);
+      }
+    }
+
+    // 地圖上同時標出目擊點與走失點，縮放到兩點都看得到
+    function drawSpotMap(sLat, sLng, lLat, lLng) {
+      try {
+        const map = L.map('spotMap');
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19, attribution: '&copy; OpenStreetMap'
+        }).addTo(map);
+        const pin = (lat, lng, color) => L.circleMarker([lat, lng], {
+          radius: 10, fillColor: color, color: '#fff', weight: 3, fillOpacity: 0.95
+        }).addTo(map);
+        pin(sLat, sLng, '#3b82f6').bindPopup('目擊地點');
+        if (!isNaN(lLat) && !isNaN(lLng)) {
+          pin(lLat, lLng, '#ef4444').bindPopup('你的走失地點');
+          map.fitBounds([[sLat, sLng], [lLat, lLng]], { padding: [30, 30], maxZoom: 17 });
+        } else {
+          map.setView([sLat, sLng], 16);
+        }
+      } catch (e) {
+        document.getElementById('spotMap').textContent = '地圖載入失敗，可以用下方按鈕開啟 Google 地圖。';
       }
     }
 

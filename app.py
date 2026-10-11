@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import random
@@ -17,7 +18,7 @@ except ImportError:
   pass
 
 # 引入檢查點一驗證完成的比對核心模組
-from matcher import calculate_match
+from matcher import NOTIFY_THRESHOLD, calculate_match, compare_special_marks, rank_key
 
 # AI 照片辨識（Azure AI Foundry）：提供 /api/analyze-photo 預填外觀欄位
 from vision import vision_bp
@@ -68,13 +69,13 @@ def normalize_time(raw):
 # 避免任何人（包含飼主與協尋者彼此）從 API 拿到對方的聯絡方式或精確位置
 LOST_PUBLIC_FIELDS = """
     id, case_code, pet_name, species, size, fur_length, accessory, accessory_color,
-    fur_color, special_mark, notes, photo_1, photo_2, photo_3,
+    fur_color, special_mark, special_mark_note, notes, photo_1, photo_2, photo_3,
     lat_public, lng_public, lost_time, status
 """
 SIGHTING_PUBLIC_FIELDS = """
     id, species, size, fur_length, accessory, accessory_color, fur_color,
-    special_mark, photo_1, photo_2, photo_3, description, sighting_time,
-    status, matched_lost_id
+    special_mark, special_mark_note, photo_1, photo_2, photo_3, description,
+    sighting_time, status, matched_lost_id
 """
 
 # 比對用的欄位（matcher.py 需要的 key）
@@ -84,9 +85,15 @@ MATCH_KEYS = (
 )
 
 
+def mark_note_of(row):
+  """取出「其他」特殊記號的手寫描述；舊資料或查詢沒選這個欄位時回傳空字串"""
+  return (row["special_mark_note"] or "") if "special_mark_note" in row.keys() else ""
+
+
 def lost_to_match_obj(row):
   """把 lost_reports 的一列轉成 calculate_match() 要的字典（用精確座標計算距離）"""
   obj = {k: row[k] for k in MATCH_KEYS}
+  obj["special_mark_note"] = mark_note_of(row)
   obj.update(lat=row["lat_precise"], lng=row["lng_precise"], lost_time=row["lost_time"])
   return obj
 
@@ -94,6 +101,7 @@ def lost_to_match_obj(row):
 def sighting_to_match_obj(row):
   """把 sightings 的一列轉成 calculate_match() 要的字典"""
   obj = {k: row[k] for k in MATCH_KEYS}
+  obj["special_mark_note"] = mark_note_of(row)
   obj.update(lat=row["lat"], lng=row["lng"], sighting_time=row["sighting_time"])
   return obj
 
@@ -130,7 +138,8 @@ def build_compare(lost, sighting):
   gap = abs(size_rank.get(lost["size"], 2) - size_rank.get(sighting["size"], 2))
   add("體型", f"{lost['size']}型", f"{sighting['size']}型",
       "match" if gap == 0 else ("partial" if gap == 1 else "diff"),
-      "差一級，目測容易有誤差" if gap == 1 else "")
+      "差一級，目測容易有誤差" if gap == 1
+      else ("差兩級，照片沒有比例尺，請看照片判斷" if gap == 2 else ""))
 
   add("毛長", lost["fur_length"], sighting["fur_length"],
       "match" if lost["fur_length"] == sighting["fur_length"] else "diff")
@@ -152,15 +161,27 @@ def build_compare(lost, sighting):
   else:
     add("配件", l_text, s_text, "diff")
 
-  # 特殊記號：「看不清楚」如實顯示
+  # 特殊記號：直接用 matcher.py 的同一套規則判斷，畫面與計分不會不一致
   l_mark, s_mark = lost["special_mark"], sighting["special_mark"]
+  l_note, s_note = mark_note_of(lost), mark_note_of(sighting)
+  l_text = f"其他：{l_note}" if l_mark == "其他" and l_note else l_mark
+  s_text = f"其他：{s_note}" if s_mark == "其他" and s_note else s_mark
+  score, reason = compare_special_marks(l_mark, l_note, s_mark, s_note)
   if "看不清楚" in (l_mark, s_mark):
-    add("特殊記號", l_mark, s_mark, "unclear", "協尋者看不清楚，請用照片確認")
-  elif l_mark == s_mark:
-    add("特殊記號", l_mark, s_mark, "match",
-        "雙方都沒有特殊記號" if l_mark == "沒有" else "")
+    add("特殊記號", l_text, s_text, "unclear", "協尋者看不清楚，請用照片確認")
+  elif l_mark == s_mark == "沒有":
+    add("特殊記號", l_text, s_text, "match", "雙方都沒有特殊記號")
+  elif score == 35:
+    add("特殊記號", l_text, s_text, "match",
+        "描述的部位與特徵相同" if "其他" in (l_mark, s_mark) else "")
+  elif score == 20 and "沒有" in (l_mark, s_mark):
+    add("特殊記號", l_text, s_text, "partial", "描述沒有明確的特殊特徵，請對照照片確認")
+  elif score == 20:
+    add("特殊記號", l_text, s_text, "partial", "部位相同、特徵不同，請對照照片確認")
+  elif score == 10:
+    add("特殊記號", l_text, s_text, "unclear", "描述無法自動比對，請自己對照文字")
   else:
-    add("特殊記號", l_mark, s_mark, "diff")
+    add("特殊記號", l_text, s_text, "diff")
 
   return rows
 
@@ -264,6 +285,8 @@ def init_db():
   #     所以逐一檢查欄位，缺少的用 ALTER TABLE 補上（補上的欄位舊資料會是空值）。
   ensure_columns(cursor, "lost_reports", {
       "pet_name": "TEXT",
+      # 特殊記號選「其他」時，飼主手寫的描述（用關鍵字規則跟協尋者描述比對）
+      "special_mark_note": "TEXT",
       "notes": "TEXT",
       "photo_2": "TEXT",
       "photo_3": "TEXT",
@@ -277,6 +300,10 @@ def init_db():
       "score": "INTEGER DEFAULT 0",
       "tracking_token": "TEXT",
       "contact_email": "TEXT",
+      # AI 原始預填結果（JSON 文字）：只用來統計協尋者改了多少，不參與計分
+      "ai_prefill": "TEXT",
+      # 特殊記號選「其他」時，目擊者手寫的描述（只給飼主參考，不參與計分）
+      "special_mark_note": "TEXT",
   })
 
   # 3. 測試種子資料（阿凱的小黑）；照片欄位留空，不引用不存在的檔案
@@ -492,6 +519,14 @@ def create_lost_report():
   if not lost_time:
     return jsonify({"error": "請填寫正確的走失時間"}), 400
 
+  # 特殊記號選「其他」時必須描述內容（會用來跟協尋者的描述比對）
+  special_mark_note = (data.get("special_mark_note") or "").strip()[:50]
+  if data.get("special_mark") == "其他":
+    if not special_mark_note:
+      return jsonify({"error": "特殊記號選「其他」時，請描述寵物的特徵"}), 400
+  else:
+    special_mark_note = ""
+
   email = (data.get("email") or "").strip()
   email_pattern = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
   if not email or not re.match(email_pattern, email):
@@ -516,11 +551,11 @@ def create_lost_report():
       """
         INSERT INTO lost_reports (
             case_code, pet_name, species, size, fur_length,
-            accessory, accessory_color, fur_color, special_mark, notes,
+            accessory, accessory_color, fur_color, special_mark, special_mark_note, notes,
             photo_1, photo_2, photo_3,
             lat_precise, lng_precise, lat_public, lng_public, privacy_radius,
             lost_time, email, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '尋找中')
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '尋找中')
     """,
       (
           case_code,
@@ -532,6 +567,7 @@ def create_lost_report():
           data.get("accessory_color", "無"),
           data.get("fur_color", "黑/深棕"),
           data.get("special_mark", "沒有"),
+          special_mark_note,
           data.get("notes", ""),
           data.get("photo_1"),
           data.get("photo_2", ""),
@@ -569,7 +605,8 @@ def create_sighting():
   1. 先存檔保底寫入 sightings
   2. 自動產生專屬 tracking_token
   3. 反向撈取尋找中的走失公告進行加權比對
-  4. 回傳外觀分數 >= 60 的候選清單（依時空分數由高至低排序）
+  4. 回傳外觀分數 >= NOTIFY_THRESHOLD（40）的候選清單
+     （60 分以上排前面，同一級內依時空分數由高至低）
   """
   data = request.get_json()
   if not data:
@@ -599,6 +636,21 @@ def create_sighting():
   if contact_email and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", contact_email):
     return jsonify({"error": "Email 格式不正確"}), 400
 
+  # 特殊記號選「其他」時必須描述內容，其餘情況不存
+  special_mark_note = (data.get("special_mark_note") or "").strip()[:50]
+  if data.get("special_mark") == "其他":
+    if not special_mark_note:
+      return jsonify({"error": "特殊記號選「其他」時，請描述你看到的特徵"}), 400
+  else:
+    special_mark_note = ""
+
+  # AI 原始預填：只接受物件，轉成 JSON 文字另存；格式不對就當作沒有，不擋通報
+  ai_prefill = data.get("ai_prefill")
+  ai_prefill_json = (
+      json.dumps(ai_prefill, ensure_ascii=False)[:4000]
+      if isinstance(ai_prefill, dict) else None
+  )
+
   tracking_token = f"token_{uuid.uuid4().hex[:8]}"
 
   # 2. 先存檔保底：寫入 sightings 資料表
@@ -611,8 +663,8 @@ def create_sighting():
             species, size, fur_length, accessory, accessory_color,
             fur_color, special_mark, photo_1, photo_2, photo_3,
             lat, lng, description, sighting_time,
-            status, score, tracking_token, contact_email
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '待確認', 0, ?, ?)
+            status, score, tracking_token, contact_email, ai_prefill, special_mark_note
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '待確認', 0, ?, ?, ?, ?)
     """,
       (
           data.get("species"),
@@ -631,6 +683,8 @@ def create_sighting():
           sighting_time,
           tracking_token,
           contact_email,
+          ai_prefill_json,
+          special_mark_note,
       ),
   )
 
@@ -640,7 +694,7 @@ def create_sighting():
   # 3. 反向查詢推薦：撈出所有 status = '尋找中' 的走失公告進行算分
   cursor.execute("""
         SELECT id, case_code, pet_name, species, size, fur_length,
-               accessory, accessory_color, fur_color, special_mark,
+               accessory, accessory_color, fur_color, special_mark, special_mark_note,
                lat_precise, lng_precise, lost_time, photo_1
         FROM lost_reports
         WHERE status = '尋找中'
@@ -657,29 +711,19 @@ def create_sighting():
       "accessory_color": data.get("accessory_color", "無"),
       "fur_color": data.get("fur_color", "黑/深棕"),
       "special_mark": data.get("special_mark", "沒有"),
+      "special_mark_note": special_mark_note,
       "lat": lat,
       "lng": lng,
       "sighting_time": sighting_time,
   }
 
   for row in lost_candidates:
-    lost_obj = {
-        "species": row["species"],
-        "size": row["size"],
-        "fur_length": row["fur_length"],
-        "accessory": row["accessory"],
-        "accessory_color": row["accessory_color"],
-        "fur_color": row["fur_color"],
-        "special_mark": row["special_mark"],
-        "lat": row["lat_precise"],  # 使用後端精確座標比對
-        "lng": row["lng_precise"],
-        "lost_time": row["lost_time"],
-    }
+    lost_obj = lost_to_match_obj(row)  # 使用後端精確座標比對
 
     match_res = calculate_match(lost_obj, current_sighting)
 
-    # 門檻過濾：排除者剔除，外觀分數 >= 60 才進入反向推薦清單
-    if not match_res["is_excluded"] and match_res["appearance_score"] >= 60:
+    # 門檻過濾：排除者剔除，外觀分數 >= 40 就進入反向推薦清單（寧可多推，不要漏掉）
+    if not match_res["is_excluded"] and match_res["appearance_score"] >= NOTIFY_THRESHOLD:
       candidates.append({
           "lost_id": row["id"],
           "case_code": row["case_code"],
@@ -692,8 +736,11 @@ def create_sighting():
           "details": match_res["score_details"],
       })
 
-  # 4. 清單內部依「時空分數」由高到低排序
-  candidates.sort(key=lambda x: x["spatiotemporal_score"], reverse=True)
+  # 4. 排序：先看外觀等級（60 分以上優先），同一級內再依時空分數由高到低
+  candidates.sort(
+      key=lambda x: rank_key(x["appearance_score"], x["spatiotemporal_score"]),
+      reverse=True,
+  )
 
   return (
       jsonify({
@@ -807,7 +854,7 @@ def get_lost_notifications(lost_id):
 
   1. 撈出這筆走失公告本身的特徵
   2. 撈出還沒被認領的目擊通報，並排除「這則公告的飼主」已經排除過的
-  3. 逐筆套用 calculate_match，外觀分數 >= 60 才算有效通知
+  3. 逐筆套用 calculate_match，外觀分數 >= NOTIFY_THRESHOLD（40）就算有效通知
   4. 已被協尋者手動指認（matched_lost_id = 本案）的通報，無論分數都強制納入
   5. 依時空分數由高到低排序回傳
 
@@ -820,7 +867,7 @@ def get_lost_notifications(lost_id):
   cursor.execute(
       """
         SELECT species, size, fur_length, accessory, accessory_color,
-               fur_color, special_mark, lat_precise, lng_precise, lost_time
+               fur_color, special_mark, special_mark_note, lat_precise, lng_precise, lost_time
         FROM lost_reports WHERE id = ?
     """,
       (lost_id,),
@@ -837,7 +884,7 @@ def get_lost_notifications(lost_id):
   cursor.execute(
       """
         SELECT id, species, size, fur_length, accessory, accessory_color,
-               fur_color, special_mark, photo_1, lat, lng, description,
+               fur_color, special_mark, special_mark_note, photo_1, lat, lng, description,
                sighting_time, status, matched_lost_id
         FROM sightings
         WHERE status != '飼主已確認'
@@ -854,10 +901,10 @@ def get_lost_notifications(lost_id):
   for row in sighting_rows:
     match_res = calculate_match(lost_obj, sighting_to_match_obj(row))
 
-    # 3. 門檛判斷：外觀分數 >= 60 才算通知；但已被協尋者手動指認本案的，強制納入
+    # 3. 門檛判斷：外觀分數 >= 40 就通知；但已被協尋者手動指認本案的，強制納入
     already_picked = row["matched_lost_id"] == lost_id
     if already_picked or (
-        not match_res["is_excluded"] and match_res["appearance_score"] >= 60
+        not match_res["is_excluded"] and match_res["appearance_score"] >= NOTIFY_THRESHOLD
     ):
       notifications.append({
           "sighting_id": row["id"],
@@ -872,8 +919,11 @@ def get_lost_notifications(lost_id):
           "manually_confirmed": already_picked,
       })
 
-  # 4. 依時空分數排序（手動指認的已經是鐵板,但排序時一樣用分數排,簡單一致）
-  notifications.sort(key=lambda x: x["spatiotemporal_score"], reverse=True)
+  # 4. 排序：先看外觀等級（60 分以上優先），同一級內再依時空分數由高到低
+  notifications.sort(
+      key=lambda x: rank_key(x["appearance_score"], x["spatiotemporal_score"]),
+      reverse=True,
+  )
 
   return (
       jsonify({
@@ -915,9 +965,10 @@ def get_sighting_for_lost(lost_id, sighting_id):
 
   match_res = calculate_match(lost_to_match_obj(lost), sighting_to_match_obj(sighting))
 
-  # 回傳前拿掉精確座標
+  # 飼主的精確座標不回傳（只給公開模糊座標 lat_public / lng_public）；
+  # 目擊座標要回傳，飼主才知道去哪裡找（它本來就以藍色圖釘公開顯示在地圖上）
   lost_public = {k: lost[k] for k in lost.keys() if k not in ("lat_precise", "lng_precise")}
-  sighting_public = {k: sighting[k] for k in sighting.keys() if k not in ("lat", "lng")}
+  sighting_public = dict(sighting)
 
   return jsonify({
       "lost": lost_public,
@@ -1041,4 +1092,4 @@ def reject_sighting(lost_id):
 #=========================================
 
 if __name__ == "__main__":
-  app.run(debug=True, port=5000)
+  app.run(debug=True, port=5001)
