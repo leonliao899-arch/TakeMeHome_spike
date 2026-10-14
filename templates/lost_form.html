@@ -27,6 +27,11 @@
     select, input[type="text"], input[type="datetime-local"], input[type="email"] {
       width: 100%; padding: 8px; box-sizing: border-box; font-size: 16px; border: 1px solid #ccc; border-radius: 4px;
     }
+    .choice-row { display: flex; gap: 8px; }
+    .choice-btn { flex: 1; padding: 12px 6px; font-size: 16px; background: #fff; color: #333;
+      border: 1.5px solid #cbd5e1; border-radius: 10px; }
+    .choice-btn.active { background: #eff6ff; border: 2px solid #2563eb; color: #1d4ed8; font-weight: bold; }
+    .choice-row.input-error { border: 2px solid #dc2626; border-radius: 10px; padding: 4px; background: #fef2f2; }
     .btn-group { display: flex; justify-content: space-between; margin-top: 24px; }
     button { padding: 10px 18px; font-size: 15px; cursor: pointer; border-radius: 4px; border: 1px solid #aaa; background: #f0f0f0; }
     button.btn-primary { background: #2563eb; color: white; border: none; font-weight: bold; }
@@ -269,7 +274,8 @@
 
       <div class="form-group">
         <label>物種 (硬性條件)<span class="required">*</span>：</label>
-        <select id="species">
+        <div class="choice-row" data-for="species"><button type="button" class="choice-btn" data-value="狗">🐶 狗</button><button type="button" class="choice-btn" data-value="貓">🐱 貓</button></div>
+        <select style="display:none" id="species">
           <option value="">-- 請選擇物種 --</option>
           <option value="狗">狗</option>
           <option value="貓">貓</option>
@@ -277,20 +283,22 @@
         <div id="species-error" class="error-text">請務必選擇物種！</div>
       </div>
 
-      <div class="form-group">
-        <label>體型 (硬性條件)<span class="required">*</span>：</label>
-        <select id="size">
+      <div class="form-group" id="sizeGroup">
+        <label>體型（選填，狗才需要）：</label>
+        <div class="choice-row" data-for="size"><button type="button" class="choice-btn" data-value="小">小型</button><button type="button" class="choice-btn" data-value="中">中型</button><button type="button" class="choice-btn" data-value="大">大型</button></div>
+        <select style="display:none" id="size">
           <option value="">-- 請選擇體型 --</option>
           <option value="小">小型</option>
           <option value="中">中型</option>
           <option value="大">大型</option>
         </select>
-        <div id="size-error" class="error-text">請務必選擇體型！</div>
+        <div id="size-error" class="error-text"></div>
       </div>
 
       <div class="form-group">
         <label>毛長<span class="required">*</span>：</label>
-        <select id="fur_length">
+        <div class="choice-row" data-for="fur_length"><button type="button" class="choice-btn" data-value="短毛">短毛</button><button type="button" class="choice-btn" data-value="長毛">長毛</button><button type="button" class="choice-btn" data-value="捲毛">捲毛</button></div>
+        <select style="display:none" id="fur_length">
           <option value="">-- 請選擇毛長 --</option>
           <option value="短毛">短毛</option>
           <option value="長毛">長毛</option>
@@ -444,9 +452,18 @@
       </div>
 
       <div class="form-group">
-        <label>飼主聯絡 Email (不公開，接收符合通知用)<span class="required">*</span>：</label>
+        <label>飼主聯絡 Email（選填，不公開）：</label>
         <input type="email" id="email" placeholder="example@gmail.com">
-        <div id="email-error" class="error-text">請填寫正確有效的 Email 格式！</div>
+        <div id="email-error" class="error-text">請填寫正確有效的 Email 格式，或留空！</div>
+      </div>
+
+      <div class="form-group" id="lineGroup" style="display:none;">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input type="checkbox" id="lineOptIn" checked style="width:auto;margin:0;">
+          <span>綁定 LINE 即時通知（建議）</span>
+        </label>
+        <div style="font-size:13px;color:#64748b;margin:6px 0;">有人看到你的寶貝時，直接傳 LINE 通知你。綁定完回到這裡，再按「確認發布」。</div>
+        <div id="lineBindArea"></div>
       </div>
 
       <div class="btn-group">
@@ -523,6 +540,35 @@
     }
 
     // Step 1 必填校驗（含寵物名字）
+    // 貓不需要體型：選貓就隱藏並清空體型，選狗才顯示
+    function syncSizeGroup() {
+      const isCat = document.getElementById('species').value === '貓';
+      document.getElementById('sizeGroup').style.display = isCat ? 'none' : '';
+      if (isCat) {
+        document.getElementById('size').value = '';
+        document.querySelectorAll('.choice-row[data-for="size"] .choice-btn')
+          .forEach(b => b.classList.remove('active'));
+      }
+    }
+
+    // 第一步的選框：點選後同步到隱藏的 <select>（原本讀取 .value 的程式不用改）
+    document.querySelectorAll('.choice-row').forEach(row => {
+      const sel = document.getElementById(row.dataset.for);
+      row.querySelectorAll('.choice-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          // 體型是選填：再點一次已選的選項就取消
+          const cancel = row.dataset.for === 'size' && btn.classList.contains('active');
+          sel.value = cancel ? '' : btn.dataset.value;
+          row.querySelectorAll('.choice-btn').forEach(b => b.classList.toggle('active', !cancel && b === btn));
+          if (row.dataset.for === 'species') syncSizeGroup();
+          row.classList.remove('input-error');
+          sel.classList.remove('input-error');
+          const err = row.parentElement.querySelector('.error-text');
+          if (err) err.style.display = 'none';
+        });
+      });
+    });
+
     function validateStep1AndNext() {
       let isValid = true;
       const petName = document.getElementById('pet_name');
@@ -539,13 +585,14 @@
 
       const fields = [
         { id: 'species', err: 'species-error' },
-        { id: 'size', err: 'size-error' },
         { id: 'fur_length', err: 'fur-error' }
       ];
 
       fields.forEach(item => {
         const el = document.getElementById(item.id);
         const errEl = document.getElementById(item.err);
+        const rowEl = document.querySelector(`.choice-row[data-for="${item.id}"]`);
+        if (rowEl) rowEl.classList.toggle('input-error', !el.value);
         if (!el.value) {
           el.classList.add('input-error');
           errEl.style.display = 'block';
@@ -557,7 +604,7 @@
       });
 
       if (!isValid) {
-        alert("【必填提示】請填寫寵物名字，並完整選擇物種、體型與毛長！");
+        alert("【必填提示】請填寫寵物名字，並選擇物種與毛長！");
         return;
       }
       nextStep(2);
@@ -997,10 +1044,10 @@
         return;
       }
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!email || !emailRegex.test(email)) {
+      if (email && !emailRegex.test(email)) {
         document.getElementById('email-error').style.display = 'block';
         document.getElementById('email').focus();
-        alert("【格式錯誤】請填寫正確有效的 Email 信箱！");
+        alert("【格式錯誤】Email 格式不正確，可以留空！");
         return;
       }
 
@@ -1025,7 +1072,7 @@
       // 使用者輸入的文字一律經過 esc()，避免被當成 HTML 執行
       const rows = [
         ['寵物名字', petName],
-        ['物種與體型', `${species} (${size}型 / ${furLength})`],
+        ['物種與體型', `${species} (${size ? size + '型' : '體型未填'} / ${furLength})`],
         ['毛色色系', furColor],
         ['配件特徵', accText],
         ['特殊記號', markText],
@@ -1034,7 +1081,7 @@
         ['走失座標', `${lat}, ${lng}`],
         ['隱私模糊', `偏移 ${privacyRadius} 公尺`],
         ['走失時間', formattedTime],
-        ['飼主信箱', email]
+        ['飼主信箱', email || '（未填）']
       ];
       document.getElementById('summaryContent').innerHTML = rows.map(([label, val]) =>
         `<div class="summary-item"><span class="summary-label">${esc(label)}</span><span class="summary-val">${esc(val)}</span></div>`
@@ -1073,6 +1120,7 @@
     function saveDoneState(result) {
       try {
         sessionStorage.setItem(DONE_KEY, JSON.stringify({ ...result, saved_at: Date.now() }));
+        sessionStorage.removeItem('reservedOwnerToken');   // 這組憑證已用掉
       } catch (e) { /* 無痕模式等無法存取就略過 */ }
     }
 
@@ -1167,6 +1215,28 @@
     }
     const CLIENT_SUBMIT_ID = newSubmitId();
 
+    // 表單開啟時先向伺服器領一組案件憑證，讓飼主在送出前就能綁 LINE（沒綁也不影響發布）
+    let RESERVED_OWNER_TOKEN = null;
+    (async function setupLineBinding() {
+      try {
+        try { RESERVED_OWNER_TOKEN = sessionStorage.getItem('reservedOwnerToken'); } catch (e) {}
+        if (!RESERVED_OWNER_TOKEN) {
+          const res = await fetch('/api/owner-token/reserve', { method: 'POST' });
+          if (!res.ok) return;
+          RESERVED_OWNER_TOKEN = (await res.json()).owner_token;
+          try { sessionStorage.setItem('reservedOwnerToken', RESERVED_OWNER_TOKEN); } catch (e) {}
+        }
+        if (window.TMH_LINE && TMH_LINE.render(document.getElementById('lineBindArea'),
+              { token: RESERVED_OWNER_TOKEN, kind: 'owner', preSubmit: true })) {
+          document.getElementById('lineGroup').style.display = 'block';
+          const opt = document.getElementById('lineOptIn');
+          opt.addEventListener('change', () => {
+            document.getElementById('lineBindArea').style.display = opt.checked ? 'block' : 'none';
+          });
+        }
+      } catch (e) { /* 領不到就略過：LINE 綁定仍可在成功頁完成 */ }
+    })();
+
     let isSubmitting = false;
     async function executeSubmit() {
       if (isSubmitting) return;
@@ -1211,7 +1281,8 @@
           lng: document.getElementById('lng').value,
           privacy_radius: privacyRadius,
           lost_time: document.getElementById('lost_time').value,
-          email: document.getElementById('email').value.trim()
+          email: document.getElementById('email').value.trim(),
+          owner_token: RESERVED_OWNER_TOKEN || undefined
         };
 
         const response = await fetch('/api/lost_reports', {

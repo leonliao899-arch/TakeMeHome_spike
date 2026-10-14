@@ -178,7 +178,7 @@
       info.appendChild(name);
       info.appendChild(el('div', 'pet-meta', `案件編號 ${lost.case_code}`));
       info.appendChild(el('div', 'pet-meta',
-        `${lost.species}・${lost.size}型・${lost.fur_color}・走失 ${lost.lost_time}`));
+        `${lost.species}${lost.size ? '・' + lost.size + '型' : ''}・${lost.fur_color}・走失 ${lost.lost_time}`));
       card.appendChild(info);
       box.appendChild(card);
 

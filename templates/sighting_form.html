@@ -280,14 +280,13 @@
       <div class="error-text" id="species-error">請選擇物種</div>
     </div>
 
-    <div class="form-group">
-      <label class="field-label">體型<span class="required">*</span></label>
+    <div class="form-group" id="sizeGroup">
+      <label class="field-label">體型（選填，狗才需要）</label>
       <div class="chips" id="size">
         <label><input type="radio" name="size" value="小">小型</label>
         <label><input type="radio" name="size" value="中">中型</label>
         <label><input type="radio" name="size" value="大">大型</label>
       </div>
-      <div class="error-text" id="size-error">請選擇體型</div>
     </div>
 
     <div class="form-group">
@@ -459,7 +458,7 @@
         if (refLost.status !== '尋找中') { refLost = null; return; }
         document.getElementById('refName').textContent = refLost.pet_name || '未命名';
         document.getElementById('refMeta').textContent =
-          `${refLost.case_code}・${refLost.species}・${refLost.size}型・${refLost.fur_color}`;
+          `${refLost.case_code}・${refLost.species}${refLost.size ? '・' + refLost.size + '型' : ''}・${refLost.fur_color}`;
         if (refLost.photo_1) {
           const img = document.createElement('img');
           img.className = 'ref-photo';
@@ -809,6 +808,7 @@
       const radio = document.querySelector(`input[name="species"][value="${r.value}"]`);
       if (!radio) return false;
       radio.checked = true;
+      syncSizeGroup();
       badge.classList.add('show');
       aiFilled.species = { value: r.value, confidence: r.confidence };
       setAiNote('species', r.evidence ? `🔍 AI 看到：${r.evidence}` : '', false);
@@ -816,8 +816,16 @@
       return true;
     }
 
+    // 貓不需要體型：選貓就隱藏並清空體型
+    function syncSizeGroup() {
+      const isCat = getRadio('species') === '貓';
+      document.getElementById('sizeGroup').style.display = isCat ? 'none' : '';
+      if (isCat) document.querySelectorAll('input[name="size"]').forEach(r => { r.checked = false; });
+    }
+
     document.querySelectorAll('input[name="species"]').forEach(radio => {
       radio.addEventListener('change', () => {
+        syncSizeGroup();
         userEdited.species = true;
         document.getElementById('ai-badge-species').classList.remove('show');
         const ai = aiFilled.species;
@@ -951,7 +959,6 @@
       const check = (id, ok, msg) => { setError(id, !ok, msg); if (!ok) errors.push(id); };
 
       check('species', !!getRadio('species'));
-      check('size', !!getRadio('size'));
       check('fur_length', !!getRadio('fur_length'));
       check('fur_color', !!document.getElementById('fur_color').value);
       const acc = document.getElementById('accessory').value;
@@ -1018,7 +1025,7 @@
       const f = collectForm();
       const rows = [
         ['照片', `${photos.length} 張`],
-        ['物種／體型', `${f.species}（${f.size}型／${f.fur_length}）`],
+        ['物種／體型', `${f.species}（${f.size ? f.size + '型' : '體型未填'}／${f.fur_length}）`],
         ['毛色色系', f.fur_color],
         ['配件', f.accessory === '沒有' ? '沒有 / 沒看到' : `${f.accessory_color}${f.accessory}`],
         ['特殊記號', f.special_mark === '其他' ? `其他（${f.special_mark_note}）` : f.special_mark],

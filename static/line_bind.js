@@ -93,7 +93,9 @@
     head.appendChild(chip);
     box.appendChild(head);
 
-    box.appendChild(el('div', 'tmh-line-desc', isOwner
+    box.appendChild(el('div', 'tmh-line-desc', opts.preSubmit
+      ? '按下按鈕會開啟 LINE，直接按「傳送」即可；綁定後回到這個頁面，再按「確認發布」。'
+      : isOwner
       ? '綁定官方帳號後，就能從 LINE 聊天室隨時回到這個案件，不怕連結弄丟。按下按鈕會開啟 LINE，直接按「傳送」即可。'
       : '綁定官方帳號後，就能從 LINE 隨時查看這筆通報的處理進度。按下按鈕會開啟 LINE，直接按「傳送」即可。'));
 

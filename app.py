@@ -232,11 +232,17 @@ def build_compare(lost, sighting):
       "match" if lost["species"] == sighting["species"] else "diff")
 
   # 體型：差一級仍計分，標成部分吻合
-  gap = abs(size_rank.get(lost["size"], 2) - size_rank.get(sighting["size"], 2))
-  add("體型", f"{lost['size']}型", f"{sighting['size']}型",
-      "match" if gap == 0 else ("partial" if gap == 1 else "diff"),
-      "差一級，目測容易有誤差" if gap == 1
-      else ("差兩級，照片沒有比例尺，請看照片判斷" if gap == 2 else ""))
+  if lost["size"] not in size_rank or sighting["size"] not in size_rank:
+    # 任一方沒填（貓不用填體型）：無法判斷，不影響分數
+    add("體型", f"{lost['size']}型" if lost["size"] in size_rank else "未填",
+        f"{sighting['size']}型" if sighting["size"] in size_rank else "未填",
+        "unclear", "有一方沒填體型，無法判斷")
+  else:
+    gap = abs(size_rank[lost["size"]] - size_rank[sighting["size"]])
+    add("體型", f"{lost['size']}型", f"{sighting['size']}型",
+        "match" if gap == 0 else ("partial" if gap == 1 else "diff"),
+        "差一級，目測容易有誤差" if gap == 1
+        else ("差兩級，照片沒有比例尺，請看照片判斷" if gap == 2 else ""))
 
   add("毛長", lost["fur_length"], sighting["fur_length"],
       "match" if lost["fur_length"] == sighting["fur_length"] else "diff")
@@ -414,6 +420,20 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+  # 3-2. 預留的飼主憑證：表單第 4 步就能先綁 LINE，此時公告還沒送出，
+  #      先由伺服器發 token 並記下綁定的 LINE，送出公告時再認領
+  cursor.execute("""
+        CREATE TABLE IF NOT EXISTS owner_token_reservations (
+            token TEXT PRIMARY KEY,
+            line_user_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+  cursor.execute(
+      "DELETE FROM owner_token_reservations WHERE created_at < NOW() - INTERVAL '7 days'"
+  )
+  # 飼主 Email 改為選填
+  cursor.execute("ALTER TABLE lost_reports ALTER COLUMN email DROP NOT NULL")
   # LINE 只會在短時間內重送，7 天前的紀錄用不到了，每次啟動順手清掉
   cursor.execute(
       "DELETE FROM line_webhook_events WHERE created_at < NOW() - INTERVAL '7 days'"
@@ -429,6 +449,8 @@ def init_db():
   # 行政區（鄉鎮）：由座標反查、背景寫入；查不到時是空的，見 backfill_township.py
   cursor.execute("ALTER TABLE lost_reports ADD COLUMN IF NOT EXISTS township TEXT")
   cursor.execute("ALTER TABLE sightings ADD COLUMN IF NOT EXISTS township TEXT")
+  # 飼主排除的時間：地圖上的灰色圖釘從這一刻起算 7 天後不再顯示
+  cursor.execute("ALTER TABLE sightings ADD COLUMN IF NOT EXISTS excluded_at TIMESTAMP")
 
   # 5. 補發 token：舊資料（沒有 owner_token 的公告、沒有追蹤碼的通報）也要有，
   #    確保「每一筆資料都有 token」。補發的 token 只存在資料庫，沒有人知道，
@@ -525,6 +547,196 @@ def add_private_headers(resp):
 def index():
   """首頁路由：回傳地圖頁面"""
   return render_template("index.html")
+
+
+# ==========================================
+# 管理後台：/admin（獨立於首頁）。依需求「不設登入」：知道網址的人都能看到並刪除資料。
+# 寫入類 API 仍要求自訂標頭 X-Admin，擋掉別的網站用瀏覽器偷發請求。
+# ==========================================
+LOST_STATUSES = ("尋找中", "已尋回")
+SIGHTING_STATUSES = ("待確認", "已通知飼主", "飼主已確認", "飼主已排除")
+
+
+def admin_required(write=False):
+  """不驗證身分；寫入時只檢查 X-Admin 標頭"""
+  if write and request.headers.get("X-Admin") != "1":
+    abort(403)
+  return None
+
+
+@app.route("/admin")
+def admin_page():
+  denied = admin_required()
+  if denied:
+    return denied
+  return render_template("admin.html")
+
+
+@app.route("/api/admin/data")
+def admin_data():
+  denied = admin_required()
+  if denied:
+    return denied
+  with get_db_connection() as conn:
+    lost = conn.execute(
+        """
+        SELECT id, case_code, pet_name, species, status, township, photo_1,
+               lost_time, email, line_user_id IS NOT NULL AS line_bound, created_at
+        FROM lost_reports ORDER BY id DESC
+        """
+    ).fetchall()
+    sightings = conn.execute(
+        """
+        SELECT id, species, status, township, photo_1, sighting_time, matched_lost_id,
+               contact_email, line_user_id IS NOT NULL AS line_bound, created_at
+        FROM sightings ORDER BY id DESC
+        """
+    ).fetchall()
+  lost = [dict(r) for r in lost]
+  sightings = [dict(r) for r in sightings]
+  for item in lost + sightings:
+    item["created_at"] = taipei_iso(item["created_at"])
+  for item in sightings:
+    item["case_code"] = sighting_code(item["id"])
+  return jsonify({
+      "lost_reports": lost, "sightings": sightings,
+      "lost_statuses": LOST_STATUSES, "sighting_statuses": SIGHTING_STATUSES,
+  })
+
+
+@app.route("/api/admin/<kind>/<int:report_id>/status", methods=["POST"])
+def admin_set_status(kind, report_id):
+  denied = admin_required(write=True)
+  if denied:
+    return denied
+  status = (request.get_json(silent=True) or {}).get("status")
+  with get_db_connection() as conn:
+    if kind == "lost" and status in LOST_STATUSES:
+      cur = conn.execute(
+          "UPDATE lost_reports SET status = %s WHERE id = %s", (status, report_id)
+      )
+    elif kind == "sighting" and status in SIGHTING_STATUSES:
+      cur = conn.execute(
+          "UPDATE sightings SET status = %s,"
+          " excluded_at = CASE WHEN %s = '飼主已排除' THEN CURRENT_TIMESTAMP ELSE NULL END"
+          " WHERE id = %s",
+          (status, status, report_id),
+      )
+    else:
+      return jsonify({"error": "類型或狀態不正確"}), 400
+    if cur.rowcount == 0:
+      return jsonify({"error": "找不到這筆資料"}), 404
+  return jsonify({"ok": True})
+
+
+def delete_photo_file(url):
+  """刪除一張照片的實體檔案：本機 static/uploads 或 Cloudinary；失敗只記錄，不影響資料刪除"""
+  if not url:
+    return
+  try:
+    if url.startswith("/static/uploads/"):
+      path = os.path.join(UPLOAD_FOLDER, os.path.basename(url))
+      if os.path.isfile(path):
+        os.remove(path)
+    elif USE_CLOUDINARY and "/upload/" in url:
+      # https://res.cloudinary.com/<cloud>/image/upload/v123/<folder>/<name>.jpg -> <folder>/<name>
+      tail = url.split("/upload/", 1)[1].split("?", 1)[0]
+      tail = re.sub(r"^v\d+/", "", tail)
+      cloudinary.uploader.destroy(os.path.splitext(tail)[0], resource_type="image")
+  except Exception as e:
+    print(f"[admin] 刪除照片失敗 {url}：{type(e).__name__}: {e}")
+
+
+def delete_report(conn, kind, report_id):
+  """在同一個連線裡刪一筆公告／通報與關聯紀錄；回傳 (是否有刪到, 照片網址清單)"""
+  table = {"lost": "lost_reports", "sighting": "sightings"}[kind]
+  row = conn.execute(
+      f"SELECT photo_1, photo_2, photo_3, photo_4, photo_5 FROM {table} WHERE id = %s",
+      (report_id,),
+  ).fetchone()
+  if kind == "lost":
+    conn.execute("DELETE FROM sighting_claims WHERE lost_id = %s", (report_id,))
+    conn.execute("DELETE FROM sighting_rejections WHERE lost_id = %s", (report_id,))
+    conn.execute(
+        "UPDATE sightings SET matched_lost_id = NULL WHERE matched_lost_id = %s",
+        (report_id,),
+    )
+  else:
+    conn.execute("DELETE FROM sighting_claims WHERE sighting_id = %s", (report_id,))
+    conn.execute("DELETE FROM sighting_rejections WHERE sighting_id = %s", (report_id,))
+  cur = conn.execute(f"DELETE FROM {table} WHERE id = %s", (report_id,))
+  return cur.rowcount > 0, (list(row.values()) if row else [])
+
+
+@app.route("/api/admin/<kind>/<int:report_id>", methods=["DELETE"])
+def admin_delete(kind, report_id):
+  """刪除一筆公告／通報，並一併清掉關聯的指認與排除紀錄，以及照片檔（本機 uploads 或 Cloudinary）"""
+  denied = admin_required(write=True)
+  if denied:
+    return denied
+  if kind not in ("lost", "sighting"):
+    abort(404)
+  with get_db_connection() as conn:
+    found, photos = delete_report(conn, kind, report_id)
+  if not found:
+    return jsonify({"error": "找不到這筆資料"}), 404
+  for url in photos:
+    delete_photo_file(url)
+  return jsonify({"ok": True})
+
+
+@app.route("/api/admin/<kind>/bulk-delete", methods=["POST"])
+def admin_bulk_delete(kind):
+  """一次刪除多筆：body {"ids": [1,2,3]}；全部在同一個交易裡，要嘛全刪要嘛全不刪"""
+  denied = admin_required(write=True)
+  if denied:
+    return denied
+  if kind not in ("lost", "sighting"):
+    abort(404)
+  ids = (request.get_json(silent=True) or {}).get("ids")
+  if not isinstance(ids, list) or not ids or not all(isinstance(i, int) for i in ids):
+    return jsonify({"error": "請提供要刪除的 ids"}), 400
+  all_photos = []
+  deleted = 0
+  with get_db_connection() as conn:
+    for report_id in set(ids):
+      found, photos = delete_report(conn, kind, report_id)
+      if found:
+        deleted += 1
+        all_photos += photos
+  for url in all_photos:
+    delete_photo_file(url)
+  return jsonify({"ok": True, "deleted": deleted})
+
+
+def sighting_code(sighting_id):
+  """目擊通報沒有獨立欄位，案件編號由數字 id 推得（與 LOST-xxxx 對應，只供辨識）"""
+  return f"SIGHT-{int(sighting_id):04d}"
+
+
+@app.route("/public/<kind>/<int:report_id>")
+def public_report_page(kind, report_id):
+  """地圖彈窗「查看完整內容」：公開的走失公告／目擊通報詳情，只含公開欄位"""
+  if kind not in ("lost", "sighting"):
+    abort(404)
+  with get_db_connection() as conn:
+    if kind == "lost":
+      row = conn.execute(
+          f"SELECT {LOST_PUBLIC_FIELDS} FROM lost_reports WHERE id = %s", (report_id,)
+      ).fetchone()
+    else:
+      row = conn.execute(
+          f"SELECT {SIGHTING_PUBLIC_FIELDS}, lat, lng FROM sightings WHERE id = %s", (report_id,)
+      ).fetchone()
+  if not row:
+    abort(404)
+  report = dict(row)
+  # 走失公告只用模糊後的公開座標；目擊通報本來就以原座標顯示在地圖上
+  lat, lng = (report["lat_public"], report["lng_public"]) if kind == "lost" else (report["lat"], report["lng"])
+  if kind == "sighting":
+    report["case_code"] = sighting_code(report["id"])
+  photos = [report[f"photo_{i}"] for i in range(1, 6) if report.get(f"photo_{i}")]
+  return render_template("public_report.html", kind=kind, r=report, photos=photos, lat=lat, lng=lng)
 
 
 @app.route("/healthz")
@@ -647,6 +859,13 @@ def bind_token(conn, token, line_user_id, base):
         (line_user_id, token),
     ).fetchone()
     if not row:
+      # 公告還沒送出（飼主在表單裡先綁 LINE）：記在預留憑證上，送出公告時自動帶入
+      reserved = conn.execute(
+          "UPDATE owner_token_reservations SET line_user_id = %s WHERE token = %s RETURNING token",
+          (line_user_id, token),
+      ).fetchone()
+      if reserved:
+        return "已綁定 LINE ✓\n回到網站按「確認發布」送出公告後，有新通報就會通知你。"
       return "找不到這組追蹤碼，請確認完整複製"
     return (
         f"已綁定「{row['pet_name'] or '未命名'}」{row['case_code']} ✓\n"
@@ -831,7 +1050,23 @@ def bind_status(token):
     return jsonify({"bound": False}), 200
   with get_db_connection() as conn:
     row = conn.execute(sql, (token,)).fetchone()
+    if not row and OWNER_TOKEN_RE.match(token):  # 公告還沒送出：看預留憑證
+      row = conn.execute(
+          "SELECT line_user_id FROM owner_token_reservations WHERE token = %s", (token,)
+      ).fetchone()
   return jsonify({"bound": bool(row and row["line_user_id"])}), 200
+
+
+@app.route("/api/owner-token/reserve", methods=["POST"])
+def reserve_owner_token():
+  """表單開啟時先向伺服器領一組飼主憑證，讓飼主在送出公告「之前」就能綁 LINE。
+
+  token 仍由伺服器產生；送出公告時帶回來，伺服器確認是自己發的才採用。
+  """
+  token = new_token(OWNER_TOKEN_PREFIX)
+  with get_db_connection() as conn:
+    conn.execute("INSERT INTO owner_token_reservations (token) VALUES (%s)", (token,))
+  return jsonify({"owner_token": token}), 200
 
 
 # ==========================================
@@ -919,6 +1154,8 @@ def get_map_data():
                photo_1, lat, lng, description, sighting_time, status,
                township, created_at
         FROM sightings
+        WHERE status != '飼主已排除'
+           OR COALESCE(excluded_at, created_at) > NOW() - INTERVAL '7 days'
     """)
   sighting_rows = cursor.fetchall()
   sightings = [dict(row) for row in sighting_rows]
@@ -926,6 +1163,8 @@ def get_map_data():
   conn.close()
   for item in lost_reports + sightings:
     item["created_at"] = taipei_iso(item["created_at"])
+  for item in sightings:
+    item["case_code"] = sighting_code(item["id"])
   return jsonify({"lost_reports": lost_reports, "sightings": sightings})
 
 
@@ -1032,10 +1271,11 @@ def create_lost_report():
   else:
     special_mark_note = ""
 
+  # Email 選填；有填才檢查格式
   email = (data.get("email") or "").strip()
-  email_pattern = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
-  if not email or not re.match(email_pattern, email):
-    return jsonify({"error": "請填寫正確格式的 Email 信箱"}), 400
+  if email and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+    return jsonify({"error": "Email 格式不正確（可以留空）"}), 400
+  email = email or None
 
   try:
     lat_precise = float(data.get("lat"))
@@ -1049,13 +1289,16 @@ def create_lost_report():
   )
   case_code = f"LOST-{random.randint(1000, 9999)}"
   owner_token = new_token(OWNER_TOKEN_PREFIX)
+  reserved_token = data.get("owner_token")
+  if not (isinstance(reserved_token, str) and OWNER_TOKEN_RE.match(reserved_token)):
+    reserved_token = None
 
   # 欄位與值成對列出，再自動產生 %s 佔位符，避免新增欄位時數錯數量
   record = [
       ("case_code", case_code),
       ("pet_name", data.get("pet_name").strip()),
       ("species", data.get("species", "狗")),
-      ("size", data.get("size", "中")),
+      ("size", data.get("size") or ""),
       ("fur_length", data.get("fur_length", "短毛")),
       ("accessory", data.get("accessory", "沒有")),
       ("accessory_color", data.get("accessory_color", "無")),
@@ -1084,6 +1327,21 @@ def create_lost_report():
   returning = "RETURNING id, case_code, owner_token, lat_public, lng_public"
 
   with get_db_connection() as conn:
+    # 認領表單開啟時預留的憑證（只接受伺服器自己發過的）；預留時已綁的 LINE 一併帶入
+    reserved_line = None
+    if reserved_token:
+      claimed = conn.execute(
+          "DELETE FROM owner_token_reservations WHERE token = %s RETURNING line_user_id",
+          (reserved_token,),
+      ).fetchone()
+      if claimed:
+        owner_token = reserved_token
+        reserved_line = claimed["line_user_id"]
+        record = [(n, owner_token if n == "owner_token" else v) for n, v in record]
+        if reserved_line:
+          record.append(("line_user_id", reserved_line))
+        columns = ", ".join(name for name, _ in record)
+        placeholders = ", ".join(["%s"] * len(record))
     # 同一個 client_submit_id 已經發布過：ON CONFLICT DO NOTHING 不會新增，RETURNING 也沒有資料
     row = conn.execute(
         f"INSERT INTO lost_reports ({columns}) VALUES ({placeholders})"
@@ -1208,7 +1466,7 @@ def create_sighting():
     """,
       (
           data.get("species"),
-          data.get("size", "中"),
+          data.get("size") or "",
           data.get("fur_length", "短毛"),
           data.get("accessory", "沒有"),
           data.get("accessory_color", "無"),
@@ -1247,7 +1505,7 @@ def create_sighting():
 
   current_sighting = {
       "species": data.get("species"),
-      "size": data.get("size", "中"),
+      "size": data.get("size") or "",
       "fur_length": data.get("fur_length", "短毛"),
       "accessory": data.get("accessory", "沒有"),
       "accessory_color": data.get("accessory_color", "無"),
@@ -1763,7 +2021,8 @@ def owner_reject_sighting(token):
         (lost_id, sighting_id),
     )
     conn.execute(
-        "UPDATE sightings SET status = '飼主已排除' WHERE id = %s AND status != '飼主已確認'",
+        "UPDATE sightings SET status = '飼主已排除', excluded_at = CURRENT_TIMESTAMP"
+        " WHERE id = %s AND status != '飼主已確認'",
         (sighting_id,),
     )
 

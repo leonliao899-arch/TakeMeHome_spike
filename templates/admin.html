@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>管理後台 - TakeMeHome</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 16px; color: #333; background: #f8fafc; }
+    h1 { font-size: 20px; margin: 0 0 12px; }
+    .bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center; }
+    .tab { padding: 8px 14px; border: 1px solid #cbd5e1; background: #fff; border-radius: 6px; cursor: pointer; font-weight: bold; }
+    .tab.on { background: #2563eb; color: #fff; border-color: #2563eb; }
+    input[type=search], select { padding: 7px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; }
+    input[type=search] { flex: 1; min-width: 160px; }
+    .wrap { overflow-x: auto; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; }
+    table { border-collapse: collapse; width: 100%; font-size: 14px; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #e2e8f0; text-align: left; white-space: nowrap; vertical-align: middle; }
+    th { background: #f1f5f9; }
+    img.th { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; background: #e2e8f0; display: block; }
+    a.link { color: #2563eb; font-weight: bold; text-decoration: none; margin-right: 8px; }
+    button.del { background: #ef4444; color: #fff; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-weight: bold; }
+    button.del:disabled { background: #fca5a5; cursor: default; }
+    input.ck { width: 18px; height: 18px; cursor: pointer; }
+    .count { color: #64748b; font-size: 13px; }
+    .msg { color: #b91c1c; margin: 8px 0; }
+  </style>
+</head>
+<body>
+  <h1>🛠️ TakeMeHome 管理後台</h1>
+  <div class="bar">
+    <button class="tab on" id="tabLost">走失公告</button>
+    <button class="tab" id="tabSighting">目擊通報</button>
+    <input type="search" id="q" placeholder="搜尋編號、名字、物種、鄉鎮、Email…">
+    <select id="statusFilter"><option value="">全部狀態</option></select>
+    <span class="count" id="count"></span>
+    <button class="del" id="bulkDel" disabled>刪除勾選 (0)</button>
+  </div>
+  <div class="msg" id="msg"></div>
+  <div class="wrap"><table>
+    <thead id="head"></thead>
+    <tbody id="body"></tbody>
+  </table></div>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    let data = null;
+    let kind = 'lost';
+    const selected = new Set();
+
+    function updateBulk() {
+      $('bulkDel').textContent = `刪除勾選 (${selected.size})`;
+      $('bulkDel').disabled = selected.size === 0;
+    }
+    $('bulkDel').onclick = async () => {
+      const ids = [...selected];
+      if (!confirm(`確定刪除勾選的 ${ids.length} 筆？此動作無法復原，關聯紀錄與照片也會一併刪除。`)) return;
+      try {
+        const r = await api(`/api/admin/${kind}/bulk-delete`, 'POST', { ids });
+        selected.clear();
+        $('msg').textContent = '';
+        await load();
+      } catch (e) { $('msg').textContent = '批次刪除失敗：' + e.message; }
+    };
+
+
+    function el(tag, props, ...kids) {
+      const e = document.createElement(tag);
+      Object.assign(e, props || {});
+      kids.forEach(k => e.append(k));
+      return e;
+    }
+
+    async function api(path, method, body) {
+      const res = await fetch(path, {
+        method: method || 'GET',
+        headers: { 'X-Admin': '1', 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || ('HTTP ' + res.status));
+      return json;
+    }
+
+    async function load() {
+      try {
+        data = await api('/api/admin/data');
+        render();
+      } catch (e) { $('msg').textContent = '讀取失敗：' + e.message; }
+    }
+
+    function render() {
+      const lost = kind === 'lost';
+      const rows = lost ? data.lost_reports : data.sightings;
+      const statuses = lost ? data.lost_statuses : data.sighting_statuses;
+
+      const sf = $('statusFilter');
+      const cur = sf.value;
+      sf.replaceChildren(el('option', { value: '', textContent: '全部狀態' }),
+        ...statuses.map(s => el('option', { value: s, textContent: s })));
+      sf.value = statuses.includes(cur) ? cur : '';
+
+      const q = $('q').value.trim().toLowerCase();
+      const shown = rows.filter(r => {
+        if (sf.value && r.status !== sf.value) return false;
+        if (!q) return true;
+        return [r.case_code, r.pet_name, r.species, r.township, r.email, r.contact_email]
+          .some(v => v && String(v).toLowerCase().includes(q));
+      });
+      $('count').textContent = `共 ${shown.length} / ${rows.length} 筆`;
+
+      const cols = lost
+        ? ['照片', '編號', '名字', '物種', '鄉鎮', '走失時間', 'Email', 'LINE', '建立時間', '狀態', '操作']
+        : ['照片', '編號', '物種', '鄉鎮', '目擊時間', '指認公告', 'Email', 'LINE', '建立時間', '狀態', '操作'];
+      const all = el('input', { type: 'checkbox', className: 'ck', title: '全選／取消全選（目前篩選結果）' });
+      all.checked = shown.length > 0 && shown.every(r => selected.has(r.id));
+      all.onchange = () => { shown.forEach(r => all.checked ? selected.add(r.id) : selected.delete(r.id)); render(); };
+      $('head').replaceChildren(el('tr', null, el('th', null, all), ...cols.map(c => el('th', { textContent: c }))));
+
+      [...selected].forEach(id => { if (!rows.some(r => r.id === id)) selected.delete(id); });
+      updateBulk();
+      $('body').replaceChildren(...shown.map(r => {
+        const photo = r.photo_1 ? el('img', { className: 'th', src: r.photo_1, alt: '' }) : el('div', { className: 'th' });
+        const sel = el('select', null, ...statuses.map(s => el('option', { value: s, textContent: s, selected: s === r.status })));
+        sel.onchange = async () => {
+          try { await api(`/api/admin/${kind}/${r.id}/status`, 'POST', { status: sel.value }); r.status = sel.value; $('msg').textContent = ''; }
+          catch (e) { sel.value = r.status; $('msg').textContent = '更新失敗：' + e.message; }
+        };
+        const view = el('a', { className: 'link', href: `/public/${kind}/${r.id}`, target: '_blank', textContent: '查看' });
+        const del = el('button', { className: 'del', textContent: '刪除' });
+        del.onclick = async () => {
+          if (!confirm(`確定刪除 ${r.case_code}？此動作無法復原，關聯的指認／排除紀錄也會一併刪除。`)) return;
+          try {
+            await api(`/api/admin/${kind}/${r.id}`, 'DELETE');
+            await load();
+          } catch (e) { $('msg').textContent = '刪除失敗：' + e.message; }
+        };
+        const t = s => el('td', { textContent: s == null || s === '' ? '—' : s });
+        const created = r.created_at ? r.created_at.replace('T', ' ').slice(0, 16) : '';
+        const cells = lost
+          ? [t(r.case_code), t(r.pet_name), t(r.species), t(r.township), t(r.lost_time), t(r.email), t(r.line_bound ? '已綁定' : '否'), t(created)]
+          : [t(r.case_code), t(r.species), t(r.township), t(r.sighting_time), t(r.matched_lost_id), t(r.contact_email), t(r.line_bound ? '已綁定' : '否'), t(created)];
+        const ck = el('input', { type: 'checkbox', className: 'ck', checked: selected.has(r.id) });
+        ck.onchange = () => { ck.checked ? selected.add(r.id) : selected.delete(r.id); updateBulk(); };
+        return el('tr', null, el('td', null, ck), el('td', null, photo), ...cells, el('td', null, sel), el('td', null, view, del));
+      }));
+    }
+
+    function setTab(k) {
+      kind = k;
+      selected.clear();
+      $('tabLost').classList.toggle('on', k === 'lost');
+      $('tabSighting').classList.toggle('on', k === 'sighting');
+      $('statusFilter').value = '';
+      if (data) render();
+    }
+    $('tabLost').onclick = () => setTab('lost');
+    $('tabSighting').onclick = () => setTab('sighting');
+    $('q').oninput = () => data && render();
+    $('statusFilter').onchange = () => data && render();
+    load();
+  </script>
+</body>
+</html>

@@ -339,7 +339,7 @@
   <button class="menu-open-btn" type="button" onclick="toggleMenu(true)">🔍 篩選</button>
   <aside class="side-menu" id="sideMenu" aria-label="搜尋與篩選">
     <div class="side-head">
-      <strong>🐾 找找毛孩子</strong>
+      <strong>🐾 寶貝回家</strong>
       <button class="menu-close-btn" type="button" onclick="toggleMenu(false)">✕ 收合</button>
     </div>
     <div class="side-body">
@@ -350,8 +350,8 @@
         <button type="button" class="chip" data-species="貓" aria-pressed="false">🐱 貓</button>
       </div>
       <div class="chip-row" id="kindChips">
-        <button type="button" class="chip" data-kind="lost" aria-pressed="false">🔴 走失公告</button>
-        <button type="button" class="chip" data-kind="sighting" aria-pressed="false">🔵 目擊通報</button>
+        <button type="button" class="chip" data-kind="lost" aria-pressed="false"> 走失公告</button>
+        <button type="button" class="chip" data-kind="sighting" aria-pressed="false"> 目擊通報</button>
       </div>
       <div class="chip-row" id="daysChips">
         <button type="button" class="chip" data-days="3" aria-pressed="false">3天內</button>
@@ -389,8 +389,8 @@
 
   <!-- 底部行動按鈕 -->
   <div class="action-bar">
-    <a href="/lost-form" class="btn-lost">📢 發布走失公告</a>
-    <a href="/sighting-form" class="btn-sighting">👀 我看到了</a>
+    <a href="/lost-form" class="btn-lost">📢 我的寵物走失了</a>
+    <a href="/sighting-form" class="btn-sighting">👀 我看到疑似走失寵物</a>
   </div>
 
   <!-- 引入 Leaflet JS -->
@@ -450,16 +450,17 @@
 
           const popupContent = `
             <div style="min-width: 170px; font-size: 13px;">
-              <strong style="color: #ef4444;">【🔴 走失公告】</strong><br>
+              <div style="text-align: center;"><strong style="color: #ef4444;">【走失公告】</strong></div>
               ${photoHtml}
               ${nameText}
               <strong>案件：</strong>${esc(item.case_code)}<br>
-              <strong>物種：</strong>${esc(item.species)} (${esc(item.size)}型 / ${esc(item.fur_length)})<br>
+              <strong>物種：</strong>${esc(item.species)} (${item.size ? esc(item.size) + '型 / ' : ''}${esc(item.fur_length)})<br>
               <strong>毛色：</strong>${esc(item.fur_color)}<br>
               <strong>配件：</strong>${esc(item.accessory)} (${esc(item.accessory_color || '無')})<br>
               <strong>記號：</strong>${esc(item.special_mark)}<br>
               <strong>狀態：</strong>${esc(item.status)}
               <a class="popup-btn" href="/sighting-form?lost_id=${Number(item.id)}">👀 我看過這隻</a>
+              <a class="popup-btn" href="/public/lost/${Number(item.id)}">詳細資料</a>
             </div>
           `;
           redMarker.bindPopup(popupContent);
@@ -488,13 +489,15 @@
 
           const popupContent = `
             <div style="min-width: 170px; font-size: 13px;">
-              <strong style="color: #3b82f6;">【🔵 目擊通報】</strong><br>
+              <div style="text-align: center;"><strong style="color: #3b82f6;">【目擊通報】</strong></div>
               ${sightingPhoto}
-              <strong>物種：</strong>${esc(item.species)} (${esc(item.size)}型)<br>
+              <strong>案件：</strong>${esc(item.case_code)}<br>
+              <strong>物種：</strong>${esc(item.species)} ${item.size ? '(' + esc(item.size) + '型)' : ''}<br>
               <strong>毛色：</strong>${esc(item.fur_color)}<br>
               <strong>發現環境：</strong>${esc(item.description || '未填寫')}<br>
               <strong>時間：</strong>${esc(item.sighting_time)}<br>
               <strong>狀態：</strong>${esc(item.status)}
+              <a class="popup-btn" href="/public/sighting/${Number(item.id)}">詳細資料</a>
             </div>
           `;
           blueMarker.bindPopup(popupContent);
