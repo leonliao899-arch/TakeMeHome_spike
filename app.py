@@ -497,7 +497,7 @@ def file_too_large(_err):
 
 
 # 網址裡帶有 token 的頁面與 API
-PRIVATE_PATH_PREFIXES = ("/case/", "/api/owner/", "/track/", "/api/bind-status/")
+PRIVATE_PATH_PREFIXES = ("/case/", "/api/owner/", "/track/", "/api/bind-status/", "/api/track/")
 
 
 @app.after_request
@@ -1039,6 +1039,38 @@ def create_lost_report():
   return lost_created_response(existing, 200, duplicate=True)
 
 
+def build_candidates(lost_rows, current):
+  """把尋找中的公告逐一算分，回傳通過門檻、排序好的候選清單（新通報與追蹤頁「再指認」共用）。
+
+  lost_rows 需要的欄位見 create_sighting 的 SELECT；current 是 calculate_match 要的目擊字典。
+  """
+  candidates = []
+  for row in lost_rows:
+    lost_obj = lost_to_match_obj(row)  # 使用後端精確座標比對
+    match_res = calculate_match(lost_obj, current)
+
+    # 門檻過濾：排除者剔除，外觀分數 >= 40 就進入候選清單（寧可多推，不要漏掉）
+    if not match_res["is_excluded"] and match_res["appearance_score"] >= NOTIFY_THRESHOLD:
+      candidates.append({
+          "lost_id": row["id"],
+          "case_code": row["case_code"],
+          "pet_name": row["pet_name"] or "未命名",
+          "photo_1": row["photo_1"],
+          "appearance_score": match_res["appearance_score"],
+          "match_level": match_res["match_level"],
+          "distance_km": match_res["distance_km"],
+          "spatiotemporal_score": match_res["spatiotemporal_score"],
+          "details": match_res["score_details"],
+      })
+
+  # 排序：先看外觀等級（60 分以上優先），同一級內再依時空分數由高到低
+  candidates.sort(
+      key=lambda x: rank_key(x["appearance_score"], x["spatiotemporal_score"]),
+      reverse=True,
+  )
+  return candidates
+
+
 @app.route("/api/sightings", methods=["POST"])
 def create_sighting():
   """【檢查點二】協尋者目擊通報 API：
@@ -1147,7 +1179,6 @@ def create_sighting():
   lost_candidates = cursor.fetchall()
   conn.close()
 
-  candidates = []
   current_sighting = {
       "species": data.get("species"),
       "size": data.get("size", "中"),
@@ -1162,30 +1193,7 @@ def create_sighting():
       "sighting_time": sighting_time,
   }
 
-  for row in lost_candidates:
-    lost_obj = lost_to_match_obj(row)  # 使用後端精確座標比對
-
-    match_res = calculate_match(lost_obj, current_sighting)
-
-    # 門檻過濾：排除者剔除，外觀分數 >= 40 就進入反向推薦清單（寧可多推，不要漏掉）
-    if not match_res["is_excluded"] and match_res["appearance_score"] >= NOTIFY_THRESHOLD:
-      candidates.append({
-          "lost_id": row["id"],
-          "case_code": row["case_code"],
-          "pet_name": row["pet_name"] or "未命名",
-          "photo_1": row["photo_1"],
-          "appearance_score": match_res["appearance_score"],
-          "match_level": match_res["match_level"],
-          "distance_km": match_res["distance_km"],
-          "spatiotemporal_score": match_res["spatiotemporal_score"],
-          "details": match_res["score_details"],
-      })
-
-  # 4. 排序：先看外觀等級（60 分以上優先），同一級內再依時空分數由高到低
-  candidates.sort(
-      key=lambda x: rank_key(x["appearance_score"], x["spatiotemporal_score"]),
-      reverse=True,
-  )
+  candidates = build_candidates(lost_candidates, current_sighting)
 
   return (
       jsonify({
@@ -1200,6 +1208,59 @@ def create_sighting():
 
 
 #=========================================
+@app.route("/api/track/<token>/candidates", methods=["GET"])
+def track_candidates(token):
+  """追蹤頁「再指認其他公告」：依通報特徵重新算候選清單。
+
+  排除：已經指認過的、這則公告的飼主已排除過這筆通報的、已結案的公告。
+  通報已被飼主確認（寵物已找到）時回 closed，不再列出候選。
+  """
+  if not TRACK_TOKEN_RE.match(token):
+    return jsonify({"error": "找不到這筆通報"}), 404
+
+  with get_db_connection() as conn:
+    sighting = conn.execute(
+        """
+        SELECT id, status, species, size, fur_length, accessory, accessory_color,
+               fur_color, special_mark, special_mark_note, lat, lng, sighting_time
+        FROM sightings WHERE tracking_token = %s
+        """,
+        (token,),
+    ).fetchone()
+    if not sighting:
+      return jsonify({"error": "找不到這筆通報"}), 404
+
+    claimed = conn.execute(
+        """
+        SELECT l.id AS lost_id, l.case_code, l.pet_name
+        FROM sighting_claims c JOIN lost_reports l ON l.id = c.lost_id
+        WHERE c.sighting_id = %s ORDER BY c.id
+        """,
+        (sighting["id"],),
+    ).fetchall()
+
+    if sighting["status"] == "飼主已確認":
+      return jsonify({"sighting_id": sighting["id"], "closed": True,
+                      "claimed": claimed, "candidates": []}), 200
+
+    lost_rows = conn.execute(
+        """
+        SELECT id, case_code, pet_name, species, size, fur_length, accessory, accessory_color,
+               fur_color, special_mark, special_mark_note, lat_precise, lng_precise,
+               lost_time, photo_1
+        FROM lost_reports
+        WHERE status = '尋找中'
+          AND id NOT IN (SELECT lost_id FROM sighting_claims WHERE sighting_id = %s)
+          AND id NOT IN (SELECT lost_id FROM sighting_rejections WHERE sighting_id = %s)
+        """,
+        (sighting["id"], sighting["id"]),
+    ).fetchall()
+
+  candidates = build_candidates(lost_rows, sighting_to_match_obj(sighting))
+  return jsonify({"sighting_id": sighting["id"], "closed": False,
+                  "claimed": claimed, "candidates": candidates}), 200
+
+
 @app.route("/api/sightings/<int:sighting_id>/match", methods=["POST"])
 def match_sighting(sighting_id):
   """【檢查點三】協尋者反向指認 API（「就是這隻！」）：

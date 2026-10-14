@@ -32,6 +32,26 @@
     .info span:first-child { color: #64748b; flex-shrink: 0; }
     .info span:last-child { font-weight: bold; text-align: right; word-break: break-all; }
     .photo { width: 100%; max-height: 260px; object-fit: cover; border-radius: 8px; margin-bottom: 12px; }
+    .more-box { margin-top: 16px; }
+    .btn-more {
+      width: 100%; padding: 11px; border: 2px solid #2563eb; background: #fff; color: #2563eb;
+      border-radius: 8px; font-size: 15px; font-weight: bold; cursor: pointer;
+    }
+    .btn-more:disabled { opacity: 0.55; cursor: default; }
+    .more-area .hint { font-size: 13px; color: #475569; margin: 10px 0; }
+    .more-area .done-msg { font-size: 13px; color: #166534; background: #dcfce7; border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
+    .cand { display: flex; gap: 12px; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; margin-top: 10px; }
+    .cand.picked { border-color: #16a34a; }
+    .cand-photo { width: 72px; height: 72px; border-radius: 8px; object-fit: cover; flex-shrink: 0; background: #f1f5f9; }
+    .cand-body { flex: 1; min-width: 0; }
+    .cand-name { font-weight: bold; font-size: 16px; }
+    .cand-code, .cand-meta { font-size: 13px; color: #64748b; }
+    .cand-meta { color: #334155; }
+    .btn-pick {
+      margin-top: 8px; width: 100%; padding: 9px; border: none; border-radius: 6px;
+      background: #2563eb; color: #fff; font-weight: bold; font-size: 14px; cursor: pointer;
+    }
+    .btn-pick:disabled { background: #94a3b8; cursor: default; }
     a.btn {
       display: block; margin-top: 18px; padding: 11px; border-radius: 6px; text-align: center;
       text-decoration: none; font-weight: bold; background: #2563eb; color: #fff;
@@ -89,6 +109,109 @@
         <div><span>關聯公告</span><span>{{ sighting.pet_name or '' }} {{ sighting.case_code }}</span></div>
       {% endif %}
     </div>
+
+    {# 再指認其他公告：飼主已確認就不需要；清單由 /api/track/<token>/candidates 即時算出 #}
+    {% if st != '飼主已確認' %}
+      <div class="more-box">
+        <button type="button" class="btn-more" id="moreBtn">➕ 再指認其他公告</button>
+        <div class="more-area" id="moreArea"></div>
+      </div>
+      <script>
+        (function () {
+          const TOKEN = {{ tracking_token|tojson }};
+          const btn = document.getElementById('moreBtn');
+          const area = document.getElementById('moreArea');
+          let sightingId = null;
+
+          function el(tag, cls, text) {
+            const n = document.createElement(tag);
+            if (cls) n.className = cls;
+            if (text != null) n.textContent = text;   // 飼主與公告的文字一律用 textContent，避免 XSS
+            return n;
+          }
+
+          async function load() {
+            btn.disabled = true;
+            area.innerHTML = '';
+            area.appendChild(el('div', 'hint', '查詢中…'));
+            try {
+              const res = await fetch(`/api/track/${encodeURIComponent(TOKEN)}/candidates`);
+              if (!res.ok) throw new Error('load');
+              render(await res.json());
+            } catch (e) {
+              area.innerHTML = '';
+              area.appendChild(el('div', 'hint', '❌ 載入失敗，請稍後再試。'));
+            } finally {
+              btn.disabled = false;
+              btn.textContent = '🔄 重新載入清單';
+            }
+          }
+
+          function render(data, notice) {
+            sightingId = data.sighting_id;
+            area.innerHTML = '';
+            if (notice) area.appendChild(el('div', 'done-msg', notice));
+            if (data.claimed.length) {
+              area.appendChild(el('div', 'hint',
+                '你已指認：' + data.claimed.map(c => `${c.pet_name || '未命名'}（${c.case_code}）`).join('、')));
+            }
+            if (data.closed) {
+              area.appendChild(el('div', 'hint', '飼主已確認過這隻寶貝，無法再指認。'));
+              return;
+            }
+            if (data.candidates.length === 0) {
+              area.appendChild(el('div', 'hint', '目前沒有其他外觀相近、仍在尋找中的公告。'));
+              return;
+            }
+            area.appendChild(el('div', 'hint', '看照片覺得是同一隻，就按「就是這隻！」。可以指認多則。'));
+            data.candidates.forEach(c => area.appendChild(card(c)));
+          }
+
+          function card(c) {
+            const box = el('div', 'cand');
+            if (c.photo_1) {
+              const img = el('img', 'cand-photo');
+              img.src = c.photo_1;
+              img.alt = '走失公告照片';
+              box.appendChild(img);
+            }
+            const body = el('div', 'cand-body');
+            body.appendChild(el('div', 'cand-name', c.pet_name));
+            body.appendChild(el('div', 'cand-code', '案件編號 ' + c.case_code));
+            body.appendChild(el('div', 'cand-meta', `${c.match_level}（外觀 ${c.appearance_score} 分）`));
+            body.appendChild(el('div', 'cand-meta', `📏 距離走失地點約 ${c.distance_km} 公里`));
+            const pick = el('button', 'btn-pick', '就是這隻！');
+            pick.type = 'button';
+            pick.onclick = () => choose(c, pick);
+            body.appendChild(pick);
+            box.appendChild(body);
+            return box;
+          }
+
+          async function choose(c, pick) {
+            pick.disabled = true;
+            try {
+              const res = await fetch(`/api/sightings/${sightingId}/match`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ lost_id: c.lost_id, tracking_token: TOKEN })
+              });
+              const data = await res.json().catch(() => ({}));
+              if (!res.ok) throw new Error(data.error || '指認失敗');
+              // 成功：重新算清單，已指認的會自動移除；上方狀態卡在重新整理後更新
+              const again = await fetch(`/api/track/${encodeURIComponent(TOKEN)}/candidates`);
+              if (!again.ok) throw new Error('reload');
+              render(await again.json(), `✓ 已指認「${c.pet_name}」（${c.case_code}）。上方狀態會在重新整理後更新。`);
+            } catch (e) {
+              pick.disabled = false;
+              alert('❌ ' + e.message + '，請再按一次。');
+            }
+          }
+
+          btn.onclick = load;
+        })();
+      </script>
+    {% endif %}
 
     {# 用 LINE 追蹤：還沒結果的通報才顯示（飼主已確認就不需要了） #}
     {% if st != '飼主已確認' %}
