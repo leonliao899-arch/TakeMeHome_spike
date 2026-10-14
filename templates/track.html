@@ -104,6 +104,17 @@
     {% endif %}
   {% endif %}
 
+  {% if tracking_token %}
+    <script>
+      // 記下這台裝置看過目前的處理結果，首頁「我的通報」的通知數字才會歸零
+      try {
+        const seen = JSON.parse(localStorage.getItem('seenSightings') || '{}');
+        seen[{{ tracking_token|tojson }}] = {{ sighting.status|tojson }};
+        localStorage.setItem('seenSightings', JSON.stringify(seen));
+      } catch (e) { /* 無法存取就略過 */ }
+    </script>
+  {% endif %}
+
   <a class="btn" href="/">🗺️ 回到地圖</a>
 </body>
 </html>
