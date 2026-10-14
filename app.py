@@ -10,7 +10,8 @@ import secrets
 import threading
 import time
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from flask import Flask, abort, jsonify, render_template, render_template_string, request
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -425,6 +426,9 @@ def init_db():
   cursor.execute("ALTER TABLE lost_reports ADD COLUMN IF NOT EXISTS line_user_id TEXT")
   cursor.execute("ALTER TABLE lost_reports ADD COLUMN IF NOT EXISTS client_submit_id TEXT")
   cursor.execute("ALTER TABLE sightings ADD COLUMN IF NOT EXISTS line_user_id TEXT")
+  # 行政區（鄉鎮）：由座標反查、背景寫入；查不到時是空的，見 backfill_township.py
+  cursor.execute("ALTER TABLE lost_reports ADD COLUMN IF NOT EXISTS township TEXT")
+  cursor.execute("ALTER TABLE sightings ADD COLUMN IF NOT EXISTS township TEXT")
 
   # 5. 補發 token：舊資料（沒有 owner_token 的公告、沒有追蹤碼的通報）也要有，
   #    確保「每一筆資料都有 token」。補發的 token 只存在資料庫，沒有人知道，
@@ -833,6 +837,61 @@ def bind_status(token):
 # ==========================================
 # API 路由
 # ==========================================
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+# 鄉鎮區的名稱在 Nominatim 回傳的欄位不固定：區通常是 suburb，鎮／市是 town，鄉是 municipality 或 township
+TOWNSHIP_KEYS = ("suburb", "town", "township", "municipality")
+
+
+def lookup_township(lat, lng):
+  """座標所在的鄉鎮區名稱（例如「五股區」「竹南鎮」）；查不到或網路失敗回傳 None，不影響發布。
+
+  用 OpenStreetMap 的 Nominatim，免費但規定要附 User-Agent、每秒最多 1 次。
+  公告只傳公開模糊座標（lat_public），不會把精確位置送出去。
+  """
+  try:
+    res = requests.get(
+        "https://nominatim.openstreetmap.org/reverse",
+        params={"format": "jsonv2", "lat": lat, "lon": lng, "zoom": 14, "addressdetails": 1},
+        headers={"User-Agent": "TakeMeHome-spike/1.0", "Accept-Language": "zh-TW"},
+        timeout=5,
+    )
+    address = res.json().get("address", {})
+  except (requests.RequestException, ValueError):
+    return None
+  for key in TOWNSHIP_KEYS:
+    if address.get(key):
+      return address[key]
+  return None
+
+
+TOWNSHIP_ATTEMPTS = 3
+TOWNSHIP_RETRY_WAIT = 1.5   # 秒；同時也守住 Nominatim 每秒 1 次的限制
+
+
+def save_township_async(table, row_id, lat, lng):
+  """背景查行政區並寫回資料表（不拖慢發布的回應）。table 只會是內部的固定表名。
+
+  逾時或暫時查不到時最多試 3 次；還是失敗就留空，之後用 backfill_township.py 補。
+  """
+  def job():
+    for attempt in range(TOWNSHIP_ATTEMPTS):
+      township = lookup_township(lat, lng)
+      if township:
+        with get_db_connection() as conn:
+          conn.execute(f"UPDATE {table} SET township = %s WHERE id = %s", (township, row_id))
+        return
+      if attempt < TOWNSHIP_ATTEMPTS - 1:
+        time.sleep(TOWNSHIP_RETRY_WAIT)
+  threading.Thread(target=job, daemon=True).start()
+
+
+def taipei_iso(dt):
+  """created_at 存的是 UTC（Neon 預設時區，TIMESTAMP 不帶時區）；轉成台北時間的 ISO 字串"""
+  if dt is None:
+    return None
+  return dt.replace(tzinfo=timezone.utc).astimezone(TAIPEI_TZ).isoformat(timespec="minutes")
+
+
 @app.route("/api/map-data")
 def get_map_data():
   """檢查點三：整合兩張表的公開地圖資料回傳 JSON"""
@@ -841,10 +900,12 @@ def get_map_data():
 
   # 1. 撈取走失公告（隱私保護：使用公開模糊座標 lat_public / lng_public，且不外洩 Email）
   #    photo_1 給紅色圖釘的彈出視窗顯示公告照片
+  #    township／created_at／special_mark_note 給左側選單：搜尋、鄉鎮與上架時間顯示
   cursor.execute("""
         SELECT id, case_code, pet_name, species, size, fur_length,
-               accessory, accessory_color, fur_color, special_mark,
-               photo_1, lat_public AS lat, lng_public AS lng, lost_time, status
+               accessory, accessory_color, fur_color, special_mark, special_mark_note,
+               photo_1, lat_public AS lat, lng_public AS lng, lost_time, status,
+               township, created_at
         FROM lost_reports
         WHERE status = '尋找中'
     """)
@@ -854,14 +915,17 @@ def get_map_data():
   # 2. 撈取目擊通報（photo_1 給藍色圖釘的彈出視窗顯示目擊照片；不含 email 與追蹤碼）
   cursor.execute("""
         SELECT id, species, size, fur_length,
-               accessory, accessory_color, fur_color, special_mark,
-               photo_1, lat, lng, description, sighting_time, status
+               accessory, accessory_color, fur_color, special_mark, special_mark_note,
+               photo_1, lat, lng, description, sighting_time, status,
+               township, created_at
         FROM sightings
     """)
   sighting_rows = cursor.fetchall()
   sightings = [dict(row) for row in sighting_rows]
 
   conn.close()
+  for item in lost_reports + sightings:
+    item["created_at"] = taipei_iso(item["created_at"])
   return jsonify({"lost_reports": lost_reports, "sightings": sightings})
 
 
@@ -1027,6 +1091,7 @@ def create_lost_report():
         [value for _, value in record],
     ).fetchone()
     if row:
+      save_township_async("lost_reports", row["id"], row["lat_public"], row["lng_public"])
       return lost_created_response(row, 201)
 
     existing = conn.execute(
@@ -1167,6 +1232,7 @@ def create_sighting():
 
   new_sighting_id = cursor.fetchone()["id"]
   conn.commit()
+  save_township_async("sightings", new_sighting_id, lat, lng)
 
   # 3. 反向查詢推薦：撈出所有 status = '尋找中' 的走失公告進行算分
   cursor.execute("""

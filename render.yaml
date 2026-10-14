@@ -1,0 +1,33 @@
+# Render Blueprint：Dashboard → New → Blueprint，選這個 GitHub repo 就會照這份設定建立服務。
+# 標 sync: false 的是機密，不寫在檔案裡，建立時到 Dashboard 填（值參考本機 .env）。
+services:
+  - type: web
+    name: takemehome
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: DATABASE_URL          # Neon 連線字串
+        sync: false
+      - key: CLOUDINARY_URL        # 照片上傳
+        sync: false
+      - key: AZURE_OPENAI_ENDPOINT
+        sync: false
+      - key: AZURE_OPENAI_API_KEY
+        sync: false
+      - key: AZURE_OPENAI_DEPLOYMENT
+        sync: false
+      - key: AZURE_OPENAI_API_VERSION
+        sync: false
+      - key: LINE_CHANNEL_SECRET
+        sync: false
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        sync: false
+      - key: LINE_BOT_BASIC_ID
+        sync: false
+      - key: PUBLIC_BASE_URL       # 部署完成後填 Render 給的網址，例如 https://takemehome.onrender.com
+        sync: false

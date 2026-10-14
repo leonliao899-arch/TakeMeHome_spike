@@ -188,9 +188,181 @@
     }
     .btn-lost { background: #ef4444; }
     .btn-sighting { background: #2563eb; }
+
+    /* 左側篩選選單：桌機預設展開、手機預設收合（覆蓋在地圖上，按 ✕ 收合才看得到地圖） */
+    :root { --side-w: 320px; }
+    .side-menu {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      z-index: 1100;
+      width: min(var(--side-w), 86vw);
+      display: flex;
+      flex-direction: column;
+      background: #fff;
+      box-shadow: 4px 0 16px rgba(0,0,0,0.15);
+      transition: transform 0.25s ease;
+    }
+    .side-menu.collapsed { transform: translateX(calc(-100% - 16px)); }
+    .side-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 14px 10px;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .side-head strong { font-size: 16px; color: #1e293b; }
+    .menu-close-btn {
+      border: none;
+      background: #f1f5f9;
+      color: #334155;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .side-body { flex: 1; overflow-y: auto; padding: 12px 14px 24px; }
+    .search-input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px 12px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      font-size: 16px;   /* 16px 以上，iOS 點進輸入框時才不會自動放大頁面 */
+    }
+    .chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .chip {
+      border: 1px solid #cbd5e1;
+      background: #fff;
+      color: #475569;
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .chip.on { background: #2b7fff; border-color: #2b7fff; color: #fff; font-weight: 600; }
+    .result-count { margin-top: 14px; font-size: 13px; color: #475569; }
+    .section-title { margin-top: 14px; font-size: 14px; font-weight: 700; color: #1e293b; }
+    .case-list { list-style: none; margin: 4px 0 0; padding: 0; }
+    .case-item {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 4px;
+      border: none;
+      border-bottom: 1px solid #f1f5f9;
+      background: none;
+      text-align: left;
+      font: inherit;
+      color: inherit;
+      cursor: pointer;
+    }
+    .case-item:hover { background: #f8fafc; }
+    .tag {
+      flex: none;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 999px;
+    }
+    .tag { margin-left: 6px; font-weight: 600; }
+    .tag.lost { background: #ef4444; }
+    .tag.sighting { background: #3b82f6; }
+    .tag.species-dog { background: #d98b2b; }
+    .tag.species-cat { background: #4a7fd0; }
+    .case-thumb {
+      flex: none;
+      width: 52px;
+      height: 52px;
+      border-radius: 10px;
+      background: #ece9f5;
+      color: #b6aed3;
+      font-size: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    .case-thumb img { width: 100%; height: 100%; object-fit: cover; }
+    .case-text { flex: 1; min-width: 0; }
+    .case-title, .case-sub {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .case-title { font-size: 14px; font-weight: 700; color: #1e293b; }
+    .case-sub { font-size: 12px; color: #64748b; margin-top: 3px; }
+    .case-time {
+      flex: none;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #b4421f;
+      white-space: nowrap;
+    }
+    .case-empty { padding: 12px 4px; font-size: 13px; color: #94a3b8; }
+
+    /* 收合時顯示的展開鈕：貼在左邊中間，不擋頂部定位按鈕與底部行動按鈕 */
+    .menu-open-btn {
+      position: absolute;
+      left: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 1000;
+      border: none;
+      background: #fff;
+      color: #1e293b;
+      border-radius: 0 10px 10px 0;
+      padding: 12px 10px;
+      font-size: 14px;
+      font-weight: 600;
+      box-shadow: 2px 2px 10px rgba(0,0,0,0.2);
+      cursor: pointer;
+    }
+    body.menu-open .menu-open-btn { display: none; }
+
+    /* 桌機：選單展開時，底部行動按鈕讓出左側空間 */
+    @media (min-width: 768px) {
+      body.menu-open .action-bar { left: calc(var(--side-w) + 16px); }
+    }
   </style>
 </head>
 <body>
+
+  <!-- 左側篩選選單：搜尋、狗／貓與走失／目擊的條件鈕、最新上架清單；可收合，不擋住地圖 -->
+  <button class="menu-open-btn" type="button" onclick="toggleMenu(true)">🔍 篩選</button>
+  <aside class="side-menu" id="sideMenu" aria-label="搜尋與篩選">
+    <div class="side-head">
+      <strong>🐾 找找毛孩子</strong>
+      <button class="menu-close-btn" type="button" onclick="toggleMenu(false)">✕ 收合</button>
+    </div>
+    <div class="side-body">
+      <input type="search" id="searchInput" class="search-input" autocomplete="off"
+             placeholder="毛色、名字、地區、特徵…（例：白 五股）">
+      <div class="chip-row" id="speciesChips">
+        <button type="button" class="chip" data-species="狗" aria-pressed="false">🐶 狗</button>
+        <button type="button" class="chip" data-species="貓" aria-pressed="false">🐱 貓</button>
+      </div>
+      <div class="chip-row" id="kindChips">
+        <button type="button" class="chip" data-kind="lost" aria-pressed="false">🔴 走失公告</button>
+        <button type="button" class="chip" data-kind="sighting" aria-pressed="false">🔵 目擊通報</button>
+      </div>
+      <div class="chip-row" id="daysChips">
+        <button type="button" class="chip" data-days="3" aria-pressed="false">3天內</button>
+        <button type="button" class="chip" data-days="7" aria-pressed="false">7天內</button>
+        <button type="button" class="chip" data-days="30" aria-pressed="false">30天內</button>
+      </div>
+      <div class="result-count" id="resultCount">載入中…</div>
+      <div class="section-title">最新上架</div>
+      <ul class="case-list" id="caseList"></ul>
+    </div>
+  </aside>
 
   <!-- 頂部定位按鈕 -->
   <div class="controls">
@@ -248,6 +420,12 @@
     //    圖釘依 id 記下來，之後「剛發布完回到地圖」或「我的案件／通報 → 📍」才能找到那一點
     const lostMarkers = {};
     const sightingMarkers = {};
+    // 左側篩選：每個圖釘一筆 entry，filterState 是目前勾選的條件（見 3.7）
+    const allEntries = [];
+    // 預設全部不勾選＝不篩選，地圖顯示全部；某一組有勾選後，才只顯示勾選的那些
+    // days：只看最近幾天上架的（單選，null＝不限）
+    const filterState = { species: new Set(), kind: new Set(), days: null };
+    let currentQuery = '';
     fetch('/api/map-data')
       .then(res => res.json())
       .then(data => {
@@ -285,7 +463,9 @@
             </div>
           `;
           redMarker.bindPopup(popupContent);
-          lostMarkers[item.id] = { marker: redMarker, content: popupContent };
+          const entry = { kind: 'lost', item, marker: redMarker, content: popupContent, haystack: searchText(item, 'lost') };
+          lostMarkers[item.id] = entry;
+          allEntries.push(entry);
         });
 
         // (2) 繪製藍色圖釘：目擊通報 (sightings)
@@ -318,8 +498,13 @@
             </div>
           `;
           blueMarker.bindPopup(popupContent);
-          sightingMarkers[item.id] = { marker: blueMarker, content: popupContent };
+          const entry = { kind: 'sighting', item, marker: blueMarker, content: popupContent, haystack: searchText(item, 'sighting') };
+          sightingMarkers[item.id] = entry;
+          allEntries.push(entry);
         });
+
+        // 先套用左側的條件，再處理從成功頁回來的定位（定位時會把被篩掉的那一點顯示出來）
+        applyFilters();
 
         // 從發布／通報成功頁回來（網址帶 ?focus=lost-12 或 ?focus=sighting-5）：
         // 直接飛到那一點並打開彈窗，讓使用者確定資料真的標在地圖上了
@@ -330,7 +515,10 @@
           history.replaceState(null, '', '/');   // 重新整理時不再重複飛過去
         }
       })
-      .catch(err => console.error("撈取雙色圖釘資料失敗：", err));
+      .catch(err => {
+        console.error("撈取雙色圖釘資料失敗：", err);
+        document.getElementById('resultCount').textContent = '資料載入失敗，請重新整理';
+      });
 
     // 3.5 把地圖移到某一筆公告／通報，打開彈窗，外圈閃爍幾秒
     let pulseRing = null;
@@ -343,6 +531,8 @@
         return;
       }
       closePanels();
+      // 被左側篩選隱藏的那一點，點進來時要重新放回地圖
+      if (!map.hasLayer(entry.marker)) entry.marker.addTo(map);
       const label = kind === 'lost' ? '這是你發布的走失公告' : '這是你的目擊通報';
       const banner = `<div class="popup-mine">✅ ${justSubmitted ? '已標記在地圖上！' : ''}${label}</div>`;
       entry.marker.setPopupContent(banner + entry.content);
@@ -508,6 +698,177 @@
     refreshBadges();
     // 從案件頁／追蹤頁按上一頁回來時（瀏覽器可能直接用快取頁面），重新算一次數字
     window.addEventListener('pageshow', e => { if (e.persisted) refreshBadges(); });
+
+    // 3.7 左側篩選選單
+    //     搜尋：毛色、名字、地區、特徵等資料庫欄位，多個字用空白隔開、要全部符合
+    //     條件鈕：狗／貓、走失公告／目擊通報；符合條件的圖釘才留在地圖上，清單同步更新
+    function searchText(item, kind) {
+      return [
+        item.pet_name, item.case_code, item.species, item.size, item.fur_length,
+        item.accessory, item.accessory_color, item.fur_color, item.special_mark,
+        item.special_mark_note, item.description, item.status, item.township,
+        kind === 'lost' ? '走失公告' : '目擊通報'
+      ].filter(Boolean).join(' ').toLowerCase();
+    }
+
+    // 同一組（狗/貓、走失/目擊）的勾選是「或」，兩組之間是「且」；某組一個都沒勾就不限制該組
+    function passesFilter(entry) {
+      if (filterState.kind.size && !filterState.kind.has(entry.kind)) return false;
+      if (filterState.species.size && !filterState.species.has(entry.item.species)) return false;
+      if (filterState.days !== null) {
+        // 以上架時間往回推 N×24 小時；沒有上架時間的舊資料不算在內
+        const created = Date.parse(entry.item.created_at);
+        if (!(Date.now() - created <= filterState.days * 86400000)) return false;
+      }
+      return currentQuery.split(/\s+/).filter(Boolean).every(term => entry.haystack.includes(term));
+    }
+
+    // 上架時間用台北時間顯示：只顯示日期：「今天」「昨天」「10/12」
+    function dayKey(date) {
+      return date.toLocaleDateString('sv-SE', { timeZone: 'Asia/Taipei' });
+    }
+    function formatUploadTime(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      const diffDays = Math.round((Date.parse(dayKey(new Date())) - Date.parse(dayKey(d))) / 86400000);
+      if (diffDays === 0) return '今天';
+      if (diffDays === 1) return '昨天';
+      return dayKey(d).slice(5).replace('-', '/');
+    }
+
+    // 最新上架清單：依上架時間由新到舊，點一筆就在地圖上找到它
+    const LIST_LIMIT = 50;
+    function renderList(shown) {
+      const list = document.getElementById('caseList');
+      list.innerHTML = '';
+      if (shown.length === 0) {
+        const empty = document.createElement('li');
+        empty.className = 'case-empty';
+        empty.textContent = '沒有符合條件的資料';
+        list.appendChild(empty);
+        return;
+      }
+      const newest = shown.slice().sort((a, b) => (b.item.created_at || '').localeCompare(a.item.created_at || ''));
+      newest.slice(0, LIST_LIMIT).forEach(({ kind, item }) => {
+        const li = document.createElement('li');
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'case-item';
+        btn.onclick = () => {
+          focusMarker(kind, item.id, false);
+          if (isNarrow()) toggleMenu(false);   // 手機上選完就收起選單，露出地圖
+        };
+
+        // 縮圖：有照片就顯示，沒有就放腳印
+        const thumb = document.createElement('div');
+        thumb.className = 'case-thumb';
+        if (item.photo_1) {
+          const img = document.createElement('img');
+          img.src = item.photo_1;
+          img.alt = '';
+          img.loading = 'lazy';
+          thumb.appendChild(img);
+        } else {
+          thumb.textContent = '🐾';
+        }
+
+        const text = document.createElement('div');
+        text.className = 'case-text';
+        const title = document.createElement('div');
+        title.className = 'case-title';
+        const name = document.createElement('span');
+        name.textContent = kind === 'lost' ? (item.pet_name || '(未命名)') : '目擊通報';
+        const species = document.createElement('span');
+        species.className = `tag species-${item.species === '貓' ? 'cat' : 'dog'}`;
+        species.textContent = item.species || '';
+        const tag = document.createElement('span');
+        tag.className = `tag ${kind}`;
+        tag.textContent = kind === 'lost' ? '走失' : '目擊';
+        title.append(name, species, tag);
+        const sub = document.createElement('div');
+        sub.className = 'case-sub';
+        sub.textContent = `${item.township || '地區未知'}・${item.fur_color || ''}`;
+        text.append(title, sub);
+
+        const side = document.createElement('div');
+        side.className = 'case-time';
+        const time = document.createElement('div');
+        time.textContent = formatUploadTime(item.created_at);
+        side.appendChild(time);
+
+        btn.append(thumb, text, side);
+        li.appendChild(btn);
+        list.appendChild(li);
+      });
+      if (newest.length > LIST_LIMIT) {
+        const more = document.createElement('li');
+        more.className = 'case-empty';
+        more.textContent = `還有 ${newest.length - LIST_LIMIT} 筆，請用上面的搜尋或條件縮小範圍`;
+        list.appendChild(more);
+      }
+    }
+
+    // 依目前的搜尋與條件，決定哪些圖釘留在地圖上，並更新筆數與清單
+    function applyFilters() {
+      const shown = allEntries.filter(passesFilter);
+      const shownSet = new Set(shown);
+      allEntries.forEach(entry => {
+        if (shownSet.has(entry)) {
+          if (!map.hasLayer(entry.marker)) entry.marker.addTo(map);
+        } else if (map.hasLayer(entry.marker)) {
+          map.removeLayer(entry.marker);
+        }
+      });
+      const lostCount = shown.filter(e => e.kind === 'lost').length;
+      document.getElementById('resultCount').textContent =
+        `顯示 ${shown.length} 筆（走失 ${lostCount}、目擊 ${shown.length - lostCount}）`;
+      renderList(shown);
+    }
+
+    function bindChips(containerId, group, dataKey) {
+      document.getElementById(containerId).addEventListener('click', e => {
+        const chip = e.target.closest('.chip');
+        if (!chip) return;
+        const on = !chip.classList.contains('on');
+        chip.classList.toggle('on', on);
+        chip.setAttribute('aria-pressed', String(on));
+        const value = chip.dataset[dataKey];
+        if (on) filterState[group].add(value);
+        else filterState[group].delete(value);
+        applyFilters();
+      });
+    }
+    bindChips('speciesChips', 'species', 'species');
+    bindChips('kindChips', 'kind', 'kind');
+
+    // 3天內／7天內／30天內：單選，再點一次同一顆就取消
+    document.getElementById('daysChips').addEventListener('click', e => {
+      const chip = e.target.closest('.chip');
+      if (!chip) return;
+      const days = Number(chip.dataset.days);
+      filterState.days = filterState.days === days ? null : days;
+      document.querySelectorAll('#daysChips .chip').forEach(c => {
+        const on = Number(c.dataset.days) === filterState.days;
+        c.classList.toggle('on', on);
+        c.setAttribute('aria-pressed', String(on));
+      });
+      applyFilters();
+    });
+
+    document.getElementById('searchInput').addEventListener('input', e => {
+      currentQuery = e.target.value.trim().toLowerCase();
+      applyFilters();
+    });
+
+    // 手機預設收合，避免一打開就擋住地圖；桌機預設展開
+    function isNarrow() {
+      return window.matchMedia('(max-width: 767px)').matches;
+    }
+    function toggleMenu(open) {
+      document.getElementById('sideMenu').classList.toggle('collapsed', !open);
+      document.body.classList.toggle('menu-open', open);
+    }
+    toggleMenu(!isNarrow());
 
     // 4. 使用者手機定位功能
     let userMarker = null;
