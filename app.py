@@ -451,6 +451,9 @@ def init_db():
   cursor.execute("ALTER TABLE sightings ADD COLUMN IF NOT EXISTS township TEXT")
   # 飼主排除的時間：地圖上的灰色圖釘從這一刻起算 7 天後不再顯示
   cursor.execute("ALTER TABLE sightings ADD COLUMN IF NOT EXISTS excluded_at TIMESTAMP")
+  # 已取消「飼主排除」功能：舊的排除狀態與紀錄還原，讓目擊重新參與比對
+  cursor.execute("UPDATE sightings SET status = '待確認', excluded_at = NULL WHERE status = '飼主已排除'")
+  cursor.execute("DELETE FROM sighting_rejections")
 
   # 5. 補發 token：舊資料（沒有 owner_token 的公告、沒有追蹤碼的通報）也要有，
   #    確保「每一筆資料都有 token」。補發的 token 只存在資料庫，沒有人知道，
@@ -554,7 +557,7 @@ def index():
 # 寫入類 API 仍要求自訂標頭 X-Admin，擋掉別的網站用瀏覽器偷發請求。
 # ==========================================
 LOST_STATUSES = ("尋找中", "已尋回")
-SIGHTING_STATUSES = ("待確認", "已通知飼主", "飼主已確認", "飼主已排除")
+SIGHTING_STATUSES = ("待確認", "已通知飼主", "飼主已確認")
 
 
 def admin_required(write=False):
@@ -617,10 +620,7 @@ def admin_set_status(kind, report_id):
       )
     elif kind == "sighting" and status in SIGHTING_STATUSES:
       cur = conn.execute(
-          "UPDATE sightings SET status = %s,"
-          " excluded_at = CASE WHEN %s = '飼主已排除' THEN CURRENT_TIMESTAMP ELSE NULL END"
-          " WHERE id = %s",
-          (status, status, report_id),
+          "UPDATE sightings SET status = %s WHERE id = %s", (status, report_id),
       )
     else:
       return jsonify({"error": "類型或狀態不正確"}), 400
@@ -1154,8 +1154,6 @@ def get_map_data():
                photo_1, lat, lng, description, sighting_time, status,
                township, created_at
         FROM sightings
-        WHERE status != '飼主已排除'
-           OR COALESCE(excluded_at, created_at) > NOW() - INTERVAL '7 days'
     """)
   sighting_rows = cursor.fetchall()
   sightings = [dict(row) for row in sighting_rows]
@@ -1536,7 +1534,7 @@ def create_sighting():
 def track_candidates(token):
   """追蹤頁「再指認其他公告」：依通報特徵重新算候選清單。
 
-  排除：已經指認過的、這則公告的飼主已排除過這筆通報的、已結案的公告。
+  排除：已經指認過的、已結案的公告。
   通報已被飼主確認（寵物已找到）時回 closed，不再列出候選。
   """
   if not TRACK_TOKEN_RE.match(token):
@@ -1575,9 +1573,8 @@ def track_candidates(token):
         FROM lost_reports
         WHERE status = '尋找中'
           AND id NOT IN (SELECT lost_id FROM sighting_claims WHERE sighting_id = %s)
-          AND id NOT IN (SELECT lost_id FROM sighting_rejections WHERE sighting_id = %s)
         """,
-        (sighting["id"], sighting["id"]),
+        (sighting["id"],),
     ).fetchall()
 
   candidates = build_candidates(lost_rows, sighting_to_match_obj(sighting))
@@ -1619,12 +1616,6 @@ def match_sighting(sighting_id):
     # 已被某位飼主確認（寵物已找到）的通報不能再指認
     if sighting["status"] == "飼主已確認":
       return jsonify({"error": "這筆通報飼主已確認過，無法再指認"}), 409
-    # 這則公告的飼主已經排除過這筆通報：不能再指認同一則（其他公告不受影響）
-    if conn.execute(
-        "SELECT 1 FROM sighting_rejections WHERE lost_id = %s AND sighting_id = %s",
-        (lost_id, sighting_id),
-    ).fetchone():
-      return jsonify({"error": "這則公告的飼主已排除這筆通報，無法再指認"}), 409
 
     lost = conn.execute(
         """
@@ -1765,11 +1756,8 @@ def compute_notifications(conn, lost_id):
              ) AS claimed_by_this
       FROM sightings
       WHERE status != '飼主已確認'
-        AND id NOT IN (
-            SELECT sighting_id FROM sighting_rejections WHERE lost_id = %s
-        )
       """,
-      (lost_id, lost_id),
+      (lost_id,),
   ).fetchall()
 
   notifications = []
@@ -1881,10 +1869,6 @@ def owner_get_sighting(token, sighting_id):
         f"SELECT {SIGHTING_PUBLIC_FIELDS}, lat, lng FROM sightings WHERE id = %s",
         (sighting_id,),
     ).fetchone()
-    rejected = conn.execute(
-        "SELECT 1 FROM sighting_rejections WHERE lost_id = %s AND sighting_id = %s",
-        (lost_id, sighting_id),
-    ).fetchone()
     claimed = conn.execute(
         "SELECT 1 FROM sighting_claims WHERE lost_id = %s AND sighting_id = %s",
         (lost_id, sighting_id),
@@ -1911,7 +1895,6 @@ def owner_get_sighting(token, sighting_id):
       },
       "compare": build_compare(lost, sighting),
       "manually_confirmed": bool(claimed),
-      "rejected_by_owner": bool(rejected),
   }), 200
 
 
@@ -1990,47 +1973,6 @@ def owner_confirm_found(token):
       200,
   )
 
-
-@app.route("/api/owner/<token>/reject_sighting", methods=["POST"])
-def owner_reject_sighting(token):
-  """飼主點擊「不是我的寶貝」：
-
-  1. 在 sighting_rejections 記下「這則公告排除了這筆通報」
-     → 這筆通報不再出現在本案的通知欄，但其他飼主仍看得到
-  2. sightings.status -> '飼主已排除'（地圖上變成灰色圖釘）
-     已被別的飼主確認的通報不改狀態，避免蓋掉「飼主已確認」
-  """
-  data = request.get_json(silent=True) or {}
-  sighting_id = data.get("sighting_id")
-  if not sighting_id:
-    return jsonify({"error": "缺少通報 ID (sighting_id)"}), 400
-
-  with get_db_connection() as conn:
-    lost_id = find_lost_id_by_owner_token(conn, token)
-    if lost_id is None:
-      return owner_not_found()
-    if not conn.execute("SELECT 1 FROM sightings WHERE id = %s", (sighting_id,)).fetchone():
-      return jsonify({"error": f"找不到通報 ID {sighting_id}"}), 404
-
-    # ON CONFLICT DO NOTHING（取代 SQLite 的 INSERT OR IGNORE）：重複按也只會有一筆紀錄
-    conn.execute(
-        """
-        INSERT INTO sighting_rejections (lost_id, sighting_id) VALUES (%s, %s)
-        ON CONFLICT (lost_id, sighting_id) DO NOTHING
-        """,
-        (lost_id, sighting_id),
-    )
-    conn.execute(
-        "UPDATE sightings SET status = '飼主已排除', excluded_at = CURRENT_TIMESTAMP"
-        " WHERE id = %s AND status != '飼主已確認'",
-        (sighting_id,),
-    )
-
-  return jsonify({
-      "message": "已記錄，這筆通報不會再出現在你的通知欄",
-      "sighting_id": sighting_id,
-      "sighting_status": "飼主已排除",
-  }), 200
 
 #=========================================
 

@@ -57,6 +57,9 @@
       text-decoration: none; font-weight: bold; background: #2563eb; color: #fff;
     }
   </style>
+  <link rel="stylesheet" href="/static/theme.css?v=4">
+  <link rel="icon" type="image/png" href="/static/favicon.png?v=1">
+  <link rel="apple-touch-icon" href="/static/favicon.png?v=1">
 </head>
 <body>
   <h2>🔖 我的目擊通報</h2>
@@ -75,12 +78,6 @@
         <div class="icon">🎉</div>
         <div class="label">飼主已確認，就是這隻寶貝！</div>
         <div class="desc">謝謝你的通報，牠已經平安回家了。</div>
-      </div>
-    {% elif st == '飼主已排除' %}
-      <div class="status-card s-rejected">
-        <div class="icon">🙏</div>
-        <div class="label">飼主看過了，不是他的寵物</div>
-        <div class="desc">你的通報仍會留在地圖上，也許能幫到其他飼主。</div>
       </div>
     {% elif st == '已通知飼主' %}
       <div class="status-card s-notified">

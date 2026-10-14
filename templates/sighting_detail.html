@@ -111,6 +111,9 @@
     .modal-actions button { flex: 1; font-size: 15px; }
     .error { color: #dc2626; text-align: center; padding: 30px 0; font-weight: bold; }
   </style>
+  <link rel="stylesheet" href="/static/theme.css?v=4">
+  <link rel="icon" type="image/png" href="/static/favicon.png?v=1">
+  <link rel="apple-touch-icon" href="/static/favicon.png?v=1">
 </head>
 <body>
   <div class="top-bar"><a id="backLink" href="/">⬅ 回到通知清單</a></div>
@@ -280,22 +283,15 @@
       if (lost.status !== '尋找中') {
         showResult(lost.status === '已尋回' ? 'found' : 'rejected',
           lost.status === '已尋回' ? `${lost.pet_name || '寶貝'}已經回家了！這則公告已結案。` : `這則公告目前是「${lost.status}」。`);
-      } else if (d.rejected_by_owner) {
-        showResult('rejected', '你已經標記這筆通報「不是我的寶貝」。');
       } else {
-        const yes = el('button', 'btn-yes', '✅ 找到了，牠回家了');
-        const no = el('button', 'btn-no', '不是我的寶貝');
-        yes.type = no.type = 'button';
+        const yes = el('button', 'btn-yes', '✅ 找到寶貝帶回家了');
+        yes.type = 'button';
         yes.onclick = () => openModal('確定找到你的寶貝了嗎？',
           '確認後公告會標為「已尋回」，地圖上的紅色圖釘會移除，系統也會停止比對新的通報。',
           '是，牠回家了', 'btn-yes', confirmFound);
-        no.onclick = () => openModal('不是你的寶貝？',
-          '這筆通報會從你的通知清單移除，地圖上會變成灰色圖釘。',
-          '不是', 'btn-no', rejectSighting);
         const wrap = el('div', 'actions');
         wrap.appendChild(el('div', 'report-hint', '📍 到現場確認後，再回到這裡回報結果：'));
         wrap.appendChild(yes);
-        wrap.appendChild(no);
         actions.appendChild(wrap);
       }
     }
@@ -368,15 +364,6 @@
       try {
         await postJson(`${API_BASE}/confirm_found`);
         showResult('found', '恭喜！已標記為「已尋回」，謝謝協尋者的幫忙。');
-      } catch (err) {
-        alert('❌ ' + err.message);
-      }
-    }
-
-    async function rejectSighting() {
-      try {
-        await postJson(`${API_BASE}/reject_sighting`);
-        showResult('rejected', '已記錄，這筆通報不會再出現在你的通知清單。');
       } catch (err) {
         alert('❌ ' + err.message);
       }

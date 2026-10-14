@@ -235,6 +235,13 @@
     .case-code {
       margin: 12px auto 0; text-align: center; font-size: 13px; color: #64748b;
     }
+    .sight-rec { background: #f9f8f3; border-radius: 16px; padding: 14px; margin: 14px 0; }
+    .sight-rec h3 { margin: 0 0 4px; font-size: 16px; }
+    .sight-rec .hint { font-size: 13px; color: #6b6b5e; margin-bottom: 10px; }
+    .sight-item { display: flex; gap: 12px; align-items: center; background: #fff; border-radius: 12px; padding: 10px; margin-top: 8px; text-decoration: none; color: inherit; }
+    .sight-item img { width: 72px; height: 72px; object-fit: cover; border-radius: 10px; flex: none; }
+    .sight-item .info { font-size: 13px; line-height: 1.6; flex: 1; min-width: 0; }
+    .sight-item .go { font-weight: bold; white-space: nowrap; }
     .case-code strong { display: block; font-size: 24px; color: #0f172a; letter-spacing: 1px; }
     .private-box {
       margin-top: 14px; border: 1px solid #fde68a; background: #fffbeb; border-radius: 10px;
@@ -256,6 +263,9 @@
     .done-actions .secondary { border: 1px solid #cbd5e1; color: #475569; }
     .done-actions .plain { color: #64748b; font-weight: normal; font-size: 14px; padding: 6px; }
   </style>
+  <link rel="stylesheet" href="/static/theme.css?v=4">
+  <link rel="icon" type="image/png" href="/static/favicon.png?v=1">
+  <link rel="apple-touch-icon" href="/static/favicon.png?v=1">
 </head>
 <body>
 
@@ -380,7 +390,7 @@
           <option value="黑/深棕">黑 / 深棕</option>
           <option value="白/米白/淺黃">白 / 米白 / 淺黃</option>
           <option value="黃/棕/褐色">黃 / 棕 / 褐色</option>
-          <option value="虎斑/花紋">虎斑 / 花紋</option>
+          <option value="虎斑/花紋">虎斑 / 花紋 / 玳瑁</option>
           <option value="三花/雙色">三花 / 雙色</option>
         </select>
         <div class="ai-evidence" id="ai-ev-fur_color"></div>
@@ -1158,6 +1168,37 @@
       const code = mk('div', 'case-code', '案件編號');
       code.appendChild(mk('strong', '', result.case_code));
       screen.appendChild(code);
+
+      // 2.5 發布當下就推薦資料庫裡已有的相符目擊（沿用案件通知的即時比對）
+      const recBox = mk('div', 'sight-rec');
+      recBox.style.display = 'none';
+      screen.appendChild(recBox);
+      fetch(`/api/owner/${encodeURIComponent(result.owner_token)}/notifications`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => {
+          const list = (d && d.notifications) || [];
+          if (!list.length) return;
+          recBox.appendChild(mk('h3', '', `👀 已有 ${list.length} 筆可能是 ${result.pet_name || '你的寶貝'} 的目擊`));
+          recBox.appendChild(mk('div', 'hint', '這些是別人先前通報、外觀相近的目擊。點進去看詳細資料，確認是不是你的寶貝。'));
+          list.forEach(n => {
+            const a = mk('a', 'sight-item');
+            a.href = `/case/${encodeURIComponent(result.owner_token)}/sighting/${Number(n.sighting_id)}`;
+            if (n.photo_1) {
+              const img = document.createElement('img');
+              img.src = n.photo_1; img.alt = '目擊照片';
+              a.appendChild(img);
+            }
+            const info = mk('div', 'info');
+            info.appendChild(mk('div', '', n.match_level || ''));
+            info.appendChild(mk('div', '', `🕒 ${n.sighting_time || ''}`));
+            if (n.distance_km != null) info.appendChild(mk('div', '', `📏 約 ${n.distance_km} 公里`));
+            a.appendChild(info);
+            a.appendChild(mk('span', 'go', '查看 ›'));
+            recBox.appendChild(a);
+          });
+          recBox.style.display = 'block';
+        })
+        .catch(() => {});
 
       // 3. 案件私人連結（可複製）
       const box = mk('div', 'private-box');

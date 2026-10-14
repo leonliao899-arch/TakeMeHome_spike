@@ -1,0 +1,50 @@
+每筆需要放的照片（1.jpg 為主照片；公告建議 1~2 張，通報 1 張）
+
+【走失公告】
+photos/lost/L01/  小黑：狗・黑/深棕・短毛・配件:項圈紅色・記號:白襪子
+photos/lost/L02/  旺來：狗・黃/棕/褐色・短毛・配件:項圈藍色・記號:沒有
+photos/lost/L03/  柴柴：狗・黃/棕/褐色・短毛・配件:胸背帶紅色・記號:沒有
+photos/lost/L04/  豆花：狗・白/米白/淺黃・捲毛・配件:衣服黃色・記號:沒有
+photos/lost/L05/  黃金：狗・黃/棕/褐色・長毛・配件:項圈黑色・記號:沒有
+photos/lost/L06/  哈利：狗・黑/深棕・短毛・配件:名牌黃色・記號:沒有
+photos/lost/L07/  米格：狗・三花/雙色・短毛・配件:項圈綠色・記號:其他左耳有缺角
+photos/lost/L08/  小柯：狗・黃/棕/褐色・短毛・配件:沒有・記號:胸前白斑
+photos/lost/L09/  肉圓：狗・白/米白/淺黃・長毛・配件:項圈紅色・記號:沒有
+photos/lost/L10/  虎妞：狗・虎斑/花紋・短毛・配件:沒有・記號:跛腳
+photos/lost/L11/  咪咪：貓・虎斑/花紋・短毛・配件:沒有・記號:沒有
+photos/lost/L12/  橘子：貓・黃/棕/褐色・短毛・配件:項圈藍色・記號:沒有
+photos/lost/L13/  奶茶：貓・白/米白/淺黃・長毛・配件:沒有・記號:沒有
+photos/lost/L14/  小墨：貓・黑/深棕・短毛・配件:項圈綠色・記號:斷尾
+photos/lost/L15/  花捲：貓・三花/雙色・短毛・配件:名牌紅色・記號:眼周色塊
+
+【目擊通報】
+photos/sightings/S01/  狗・黑/深棕・短毛・配件:項圈紅色・記號:白襪子
+photos/sightings/S02/  狗・黑/深棕・短毛・配件:沒有・記號:白襪子
+photos/sightings/S03/  狗・黃/棕/褐色・短毛・配件:項圈藍色・記號:沒有
+photos/sightings/S04/  狗・黃/棕/褐色・短毛・配件:沒有・記號:沒有
+photos/sightings/S05/  狗・黃/棕/褐色・短毛・配件:胸背帶紅色・記號:沒有
+photos/sightings/S06/  狗・白/米白/淺黃・捲毛・配件:衣服黃色・記號:沒有
+photos/sightings/S07/  狗・白/米白/淺黃・長毛・配件:項圈黑色・記號:沒有
+photos/sightings/S08/  狗・黑/深棕・短毛・配件:名牌黃色・記號:沒有
+photos/sightings/S09/  狗・三花/雙色・短毛・配件:項圈綠色・記號:缺耳
+photos/sightings/S10/  狗・三花/雙色・短毛・配件:沒有・記號:其他耳朵有一小塊缺口
+photos/sightings/S11/  狗・黃/棕/褐色・短毛・配件:沒有・記號:胸前白斑
+photos/sightings/S12/  狗・白/米白/淺黃・長毛・配件:項圈紅色・記號:沒有
+photos/sightings/S13/  狗・虎斑/花紋・短毛・配件:沒有・記號:跛腳
+photos/sightings/S14/  狗・黑/深棕・短毛・配件:沒有・記號:沒有
+photos/sightings/S15/  狗・白/米白/淺黃・短毛・配件:沒有・記號:沒有
+photos/sightings/S16/  狗・三花/雙色・短毛・配件:沒有・記號:沒有
+photos/sightings/S17/  狗・虎斑/花紋・短毛・配件:沒有・記號:沒有
+photos/sightings/S18/  狗・黃/棕/褐色・短毛・配件:項圈紅色・記號:沒有
+photos/sightings/S19/  狗・黑/深棕・長毛・配件:項圈黑色・記號:沒有
+photos/sightings/S20/  狗・黃/棕/褐色・長毛・配件:沒有・記號:沒有
+photos/sightings/S21/  貓・虎斑/花紋・短毛・配件:沒有・記號:沒有
+photos/sightings/S22/  貓・黃/棕/褐色・短毛・配件:項圈藍色・記號:沒有
+photos/sightings/S23/  貓・黃/棕/褐色・短毛・配件:項圈紅色・記號:沒有
+photos/sightings/S24/  貓・白/米白/淺黃・長毛・配件:沒有・記號:沒有
+photos/sightings/S25/  貓・黑/深棕・短毛・配件:項圈綠色・記號:斷尾
+photos/sightings/S26/  貓・黑/深棕・短毛・配件:沒有・記號:其他尾巴被剪短了
+photos/sightings/S27/  貓・三花/雙色・短毛・配件:名牌紅色・記號:眼周色塊
+photos/sightings/S28/  貓・三花/雙色・短毛・配件:沒有・記號:眼周色塊
+photos/sightings/S29/  貓・黑/深棕・短毛・配件:沒有・記號:沒有
+photos/sightings/S30/  貓・虎斑/花紋・短毛・配件:沒有・記號:沒有

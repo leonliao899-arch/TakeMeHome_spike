@@ -332,6 +332,9 @@
       body.menu-open .action-bar { left: calc(var(--side-w) + 16px); }
     }
   </style>
+  <link rel="stylesheet" href="/static/theme.css?v=4">
+  <link rel="icon" type="image/png" href="/static/favicon.png?v=1">
+  <link rel="apple-touch-icon" href="/static/favicon.png?v=1">
 </head>
 <body>
 
@@ -339,7 +342,7 @@
   <button class="menu-open-btn" type="button" onclick="toggleMenu(true)">🔍 篩選</button>
   <aside class="side-menu" id="sideMenu" aria-label="搜尋與篩選">
     <div class="side-head">
-      <strong>🐾 寶貝回家</strong>
+      <strong style="display:inline-flex;align-items:center;gap:8px"><img src="/static/logo.png" alt="" style="height:28px;width:auto">寶貝回家</strong>
       <button class="menu-close-btn" type="button" onclick="toggleMenu(false)">✕ 收合</button>
     </div>
     <div class="side-body">
@@ -370,10 +373,8 @@
       <button class="loc-btn" onclick="getUserLocation()">📍 目前位置</button>
       <!-- 這台裝置發過公告／通報過才會出現 -->
       <button class="loc-btn my-cases-btn" id="myCasesBtn" onclick="togglePanel('myCasesPanel')" style="display: none;">📂 我的案件<span class="badge" id="myCasesBadge" hidden></span></button>
-      <button class="loc-btn my-sightings-btn" id="mySightingsBtn" onclick="togglePanel('mySightingsPanel')" style="display: none;">🔖 我的通報<span class="badge" id="mySightingsBadge" hidden></span></button>
     </div>
     <div class="my-cases-panel" id="myCasesPanel"></div>
-    <div class="my-cases-panel" id="mySightingsPanel"></div>
     <div class="status-box" id="statusBox"></div>
   </div>
 
@@ -382,9 +383,8 @@
 
   <!-- 右下角圖例 -->
   <div class="map-legend">
-    <div><span class="legend-dot dot-lost"></span><strong>🔴 走失公告</strong></div>
-    <div><span class="legend-dot dot-sighting"></span><strong>🔵 目擊通報</strong></div>
-    <div><span class="legend-dot dot-rejected"></span><strong>飼主已排除</strong></div>
+    <div><span class="legend-dot dot-lost"></span><strong>走失公告</strong></div>
+    <div><span class="legend-dot dot-sighting"></span><strong>目擊通報</strong></div>
   </div>
 
   <!-- 底部行動按鈕 -->
@@ -470,8 +470,8 @@
         });
 
         // (2) 繪製藍色圖釘：目擊通報 (sightings)
-        //     顏色依通報狀態：飼主已排除＝灰、飼主已確認＝深藍、其他＝藍
-        const SIGHTING_COLOR = { '飼主已排除': '#9ca3af', '飼主已確認': '#1e3a8a' };
+        //     顏色依通報狀態：飼主已確認＝深藍、其他＝藍
+        const SIGHTING_COLOR = { '飼主已確認': '#1e3a8a' };
         data.sightings.forEach(item => {
           const blueMarker = L.circleMarker([item.lat, item.lng], {
             radius: 9,
@@ -563,12 +563,18 @@
     }
 
     // 每一列：左邊點下去進案件頁／追蹤頁，右邊「📍」在地圖上找那一點
-    function addRow(panel, href, title, sub, kind, id, badgeCount) {
+    function addRow(panel, href, title, sub, kind, id, badgeCount, typeLabel) {
       const row = document.createElement('div');
       row.className = 'my-row';
       const a = document.createElement('a');
       a.href = href;
       a.textContent = title;               // textContent 避免 XSS
+      if (typeLabel) {
+        const t = document.createElement('span');
+        t.className = 'tag ' + kind;
+        t.textContent = typeLabel;
+        a.appendChild(t);
+      }
       if (sub) {
         const code = document.createElement('span');
         code.className = 'code';
@@ -600,7 +606,7 @@
 
     // 通知數字：伺服器回傳「目前的通知」，扣掉這台裝置已經看過的就是新通知。
     // 看過的紀錄由案件頁／追蹤頁寫入 localStorage（seenCases / seenSightings）。
-    // 通報的新通知＝飼主已確認或已排除、而且還沒看過這個結果（自己按「就是這隻」造成的狀態變化不算）。
+    // 通報的新通知＝飼主已確認、而且還沒看過這個結果（自己按「就是這隻」造成的狀態變化不算）。
     let badgeData = { cases: {}, sightings: {} };
 
     function loadSeen(key) {
@@ -619,7 +625,7 @@
 
     function newSightingCount(x) {
       const status = badgeData.sightings[x.token];
-      if (status !== '飼主已確認' && status !== '飼主已排除') return 0;
+      if (status !== '飼主已確認') return 0;
       return loadSeen('seenSightings')[x.token] === status ? 0 : 1;
     }
 
@@ -627,6 +633,12 @@
       const el = document.getElementById(id);
       el.hidden = total <= 0;
       el.textContent = total > 99 ? '99+' : total;
+    }
+
+    function pruneList(key, list, alive) {
+      const kept = list.filter(x => Object.prototype.hasOwnProperty.call(alive, x.token));
+      if (kept.length === list.length) return;
+      try { localStorage.setItem(key, JSON.stringify(kept)); } catch (e) {}
     }
 
     async function refreshBadges() {
@@ -645,44 +657,46 @@
         if (!res.ok) return;
         badgeData = await res.json();
       } catch (e) { return; }   // 查不到就不顯示數字，不影響地圖
+      // 伺服器回傳裡沒有的案件／通報＝已被刪除（例如後台刪掉），從這台裝置的清單移除
+      pruneList('myCases', cases, badgeData.cases);
+      pruneList('mySightings', sightings, badgeData.sightings);
       renderMyCases();
-      renderMySightings();
     }
 
+    // 走失公告與目擊通報合併成同一個清單，編號前面標「走失」或「目擊」
     function renderMyCases() {
       // 舊版只存 id、沒有密鑰的紀錄已無法開啟（案件頁改用密鑰），直接略過
       const cases = loadList('myCases').filter(c => c && c.token);
-      if (cases.length === 0) return;
-      document.getElementById('myCasesBtn').style.display = 'inline-block';
+      const sightings = loadList('mySightings').filter(x => x && x.token);
+      const btn = document.getElementById('myCasesBtn');
+      if (cases.length === 0 && sightings.length === 0) {
+        btn.style.display = 'none'; closePanels(); return;
+      }
+      btn.style.display = 'inline-block';
       const panel = document.getElementById('myCasesPanel');
       panel.innerHTML = '';
-      addTitle(panel, '我發布的走失公告（點名字看通報通知）');
       let total = 0;
-      cases.forEach(c => {
-        const n = newCaseCount(c.token);
-        total += n;
-        addRow(panel, `/case/${encodeURIComponent(c.token)}`,
-          `🐾 ${c.pet_name || '未命名'}`, c.case_code, 'lost', Number(c.id), n);
-      });
+      if (cases.length > 0) {
+        addTitle(panel, '我發布的走失公告（點名字看通報通知）');
+        cases.forEach(c => {
+          const n = newCaseCount(c.token);
+          total += n;
+          addRow(panel, `/case/${encodeURIComponent(c.token)}`,
+            `🐾 ${c.pet_name || '未命名'}`, c.case_code, 'lost', Number(c.id), n, '走失');
+        });
+      }
+      if (sightings.length > 0) {
+        addTitle(panel, '我通報的目擊（點一下看處理進度）');
+        sightings.forEach(x => {
+          const emoji = x.species === '貓' ? '🐱' : '🐶';
+          const n = newSightingCount(x);
+          total += n;
+          const code = 'SIGHT-' + String(Number(x.id)).padStart(4, '0');
+          addRow(panel, `/track/${encodeURIComponent(x.token)}`,
+            `${emoji} ${x.fur_color || ''}${x.species || ''}`, code, 'sighting', Number(x.id), n, '目擊');
+        });
+      }
       setBadge('myCasesBadge', total);
-    }
-
-    function renderMySightings() {
-      const list = loadList('mySightings').filter(x => x && x.token);
-      if (list.length === 0) return;
-      document.getElementById('mySightingsBtn').style.display = 'inline-block';
-      const panel = document.getElementById('mySightingsPanel');
-      panel.innerHTML = '';
-      addTitle(panel, '我通報的目擊（點一下看處理進度）');
-      let total = 0;
-      list.forEach(x => {
-        const emoji = x.species === '貓' ? '🐱' : '🐶';
-        const n = newSightingCount(x);
-        total += n;
-        addRow(panel, `/track/${encodeURIComponent(x.token)}`,
-          `${emoji} ${x.fur_color || ''}${x.species || ''}`, (x.time || '').slice(5), 'sighting', Number(x.id), n);
-      });
-      setBadge('mySightingsBadge', total);
     }
 
     function closePanels() {
@@ -697,7 +711,6 @@
     }
 
     renderMyCases();
-    renderMySightings();
     refreshBadges();
     // 從案件頁／追蹤頁按上一頁回來時（瀏覽器可能直接用快取頁面），重新算一次數字
     window.addEventListener('pageshow', e => { if (e.persisted) refreshBadges(); });

@@ -206,6 +206,16 @@
     .cand-card details { font-size: 13px; margin-top: 8px; color: #475569; }
     .cand-card details ul { margin: 6px 0 0; padding-left: 18px; }
     .cand-card .btn-pick { width: 100%; margin-top: 10px; }
+    .cand-card .cand-head { cursor: pointer; }
+    .cand-card .btn-detail { width: 100%; margin-top: 8px; padding: 10px; border-radius: 999px; border: 1px solid #b8b3a6; background: #fff; font-size: 14px; cursor: pointer; }
+    #detailModal { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 9999; display: none; align-items: flex-end; justify-content: center; }
+    #detailModal.open { display: flex; }
+    #detailModal .sheet { background: #f9f8f3; width: 100%; max-width: 560px; max-height: 90vh; overflow-y: auto; border-radius: 20px 20px 0 0; padding: 18px; box-sizing: border-box; }
+    #detailModal .photos { display: flex; gap: 8px; overflow-x: auto; margin-bottom: 12px; }
+    #detailModal .photos img { height: 220px; border-radius: 12px; flex: none; }
+    #detailModal dl { display: grid; grid-template-columns: 90px 1fr; gap: 6px 10px; margin: 0 0 12px; font-size: 14px; }
+    #detailModal dt { color: #6b6b5e; }
+    #detailModal dd { margin: 0; word-break: break-word; }
     .btn-none { width: 100%; background: #fff; border: 1px solid #cbd5e1; color: #475569; }
 
     .done-box { text-align: center; padding: 10px 0; }
@@ -224,6 +234,9 @@
     .link-primary { background: #2563eb; color: #fff; }
     .link-secondary { border: 1px solid #cbd5e1; color: #475569; }
   </style>
+  <link rel="stylesheet" href="/static/theme.css?v=4">
+  <link rel="icon" type="image/png" href="/static/favicon.png?v=1">
+  <link rel="apple-touch-icon" href="/static/favicon.png?v=1">
 </head>
 <body>
 
@@ -307,7 +320,7 @@
         <option value="黑/深棕">黑 / 深棕</option>
         <option value="白/米白/淺黃">白 / 米白 / 淺黃</option>
         <option value="黃/棕/褐色">黃 / 棕 / 褐色</option>
-        <option value="虎斑/花紋">虎斑 / 花紋</option>
+        <option value="虎斑/花紋">虎斑 / 花紋 / 玳瑁</option>
         <option value="三花/雙色">三花 / 雙色</option>
       </select>
       <div class="ai-note" id="ai-note-fur_color"></div>
@@ -1130,7 +1143,7 @@
       pickedNames = [];
       area.innerHTML = `
         <h3 style="margin-top:0">✅ 通報已存檔！可能是這隻寵物嗎？</h3>
-        <div class="hint">以下是外觀特徵相近、仍在尋找中的走失公告。看照片覺得是同一隻，就按「就是這隻！」。同一隻可能有好幾位飼主在找，每位都可以指認，全部按完再按最下方的「完成」。</div>
+        <div class="hint">以下是外觀特徵相近、仍在尋找中的走失公告。看照片覺得是同一隻，就按「可能是這隻！通知飼主」。同一隻可能有好幾位飼主在找，每位都可以指認，全部按完再按最下方的「完成」。</div>
         <div id="candList"></div>
         <button type="button" class="btn-none" id="noneBtn">可能都不是</button>
       `;
@@ -1157,7 +1170,8 @@
             </div>
           </div>
           <details><summary>吻合明細（外觀 ${Number(c.appearance_score)} 分）</summary><ul></ul></details>
-          <button type="button" class="btn-primary btn-pick">就是這隻！</button>
+          <button type="button" class="btn-detail">🔍 查看詳細資料</button>
+          <button type="button" class="btn-primary btn-pick">可能是這隻！通知飼主</button>
         `;
         // 飼主填的文字一律用 textContent 放進畫面，避免 XSS
         if (c.photo_1) {
@@ -1180,10 +1194,79 @@
         });
 
         card.querySelector('.btn-pick').onclick = () => pickCandidate(c, card);
+        const openIt = () => openDetail(c, card);
+        card.querySelector('.btn-detail').onclick = openIt;
+        card.querySelector('.cand-head').onclick = openIt;
         list.appendChild(card);
       });
 
       setDoneButton();
+    }
+
+    // 候選公告詳細資料（彈窗，內含指認按鈕）
+    async function openDetail(c, card) {
+      let modal = document.getElementById('detailModal');
+      if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'detailModal';
+        modal.onclick = e => { if (e.target === modal) modal.classList.remove('open'); };
+        document.body.appendChild(modal);
+      }
+      const sheet = document.createElement('div');
+      sheet.className = 'sheet';
+      sheet.textContent = '載入中…';
+      modal.replaceChildren(sheet);
+      modal.classList.add('open');
+      let d = c;
+      try {
+        const res = await fetch(`/api/lost_reports/${c.lost_id}`);
+        if (res.ok) d = Object.assign({}, c, await res.json());
+      } catch (e) {}
+      sheet.replaceChildren();
+      const h = document.createElement('h3');
+      h.style.marginTop = '0';
+      h.textContent = `${d.pet_name || '未命名'}（${d.case_code || c.case_code}）`;
+      sheet.appendChild(h);
+      const photos = document.createElement('div');
+      photos.className = 'photos';
+      [d.photo_1, d.photo_2, d.photo_3, d.photo_4, d.photo_5].filter(Boolean).forEach(u => {
+        const img = document.createElement('img');
+        img.src = u; img.alt = '走失公告照片';
+        photos.appendChild(img);
+      });
+      if (photos.children.length) sheet.appendChild(photos);
+      const dl = document.createElement('dl');
+      const rows = [
+        ['物種', d.species], ['體型', d.size], ['毛色', d.fur_color], ['毛長', d.fur_length],
+        ['配件', [d.accessory, d.accessory_color].filter(Boolean).join(' ')],
+        ['特徵', [d.special_mark, d.special_mark_note].filter(Boolean).join('：')],
+        ['走失時間', d.lost_time], ['距離', c.distance_km != null ? `約 ${c.distance_km} 公里` : ''],
+        ['備註', d.notes],
+      ];
+      rows.forEach(([k, v]) => {
+        if (!v) return;
+        const dt = document.createElement('dt'); dt.textContent = k;
+        const dd = document.createElement('dd'); dd.textContent = v;
+        dl.append(dt, dd);
+      });
+      sheet.appendChild(dl);
+      const pick = document.createElement('button');
+      pick.type = 'button';
+      pick.className = 'btn-primary';
+      pick.style.width = '100%';
+      const already = card.querySelector('.btn-pick').textContent.startsWith('✓');
+      pick.textContent = already ? '✓ 已指認' : '可能是這隻！通知飼主';
+      pick.disabled = already;
+      pick.onclick = async () => {
+        await pickCandidate(c, card);
+        if (card.querySelector('.btn-pick').textContent.startsWith('✓')) modal.classList.remove('open');
+      };
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'btn-detail'; close.style.width = '100%';
+      close.textContent = '關閉';
+      close.onclick = () => modal.classList.remove('open');
+      sheet.append(pick, close);
     }
 
     // 最下方按鈕：還沒指認任何一筆時是「可能都不是」，指認過後改成「完成」

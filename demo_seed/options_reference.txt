@@ -1,0 +1,14 @@
+【欄位可填的值：必須和表單選項完全一致，打錯字會讓比對失準】
+species          : 狗 / 貓
+size             : 小 / 中 / 大
+fur_length       : 短毛 / 長毛 / 捲毛
+fur_color        : 黑/深棕 / 白/米白/淺黃 / 黃/棕/褐色 / 三花/雙色 / 虎斑/花紋
+accessory        : 沒有 / 項圈 / 胸背帶 / 衣服 / 名牌
+accessory_color  : 無 / 紅色 / 藍色 / 綠色 / 黃色 / 黑色
+special_mark     : 沒有 / 白襪子 / 斷尾 / 缺耳 / 胸前白斑 / 眼周色塊 / 跛腳 / 其他
+special_mark_note: special_mark=其他 時必填（50 字內）
+時間格式         : YYYY-MM-DD HH:MM
+privacy_radius   : 公開位置模糊半徑（公尺），預設 50
+email / contact_email : 選填（已改為選填）
+photo_files      : 照片檔名，用分號分隔，放在 photos/lost/<key>/ 或 photos/sightings/<key>/，第 1 張是主照片，最多 5 張
+（請對照你專案 lost_form.html 的實際選項再確認一次）
