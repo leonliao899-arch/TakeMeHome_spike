@@ -13,6 +13,7 @@
 
 import argparse
 import csv
+from datetime import datetime, timedelta
 import os
 import random
 import shutil
@@ -36,6 +37,11 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SEED_DIR = os.path.join(BASE_DIR, "demo_seed")
 PHOTO_DIR = os.path.join(SEED_DIR, "photos")
 DEMO_EMAIL_LIKE = "%@demo.local"
+
+
+def created_utc(taipei_text):
+  """上架時間（created_at，UTC）設成事件時間，讓清單的「今天／昨天／10/12」各不相同"""
+  return datetime.strptime(taipei_text, "%Y-%m-%d %H:%M") - timedelta(hours=8)
 
 
 def read_csv(name):
@@ -119,14 +125,15 @@ def main():
             fur_color, special_mark, special_mark_note, notes,
             photo_1, photo_2, photo_3, photo_4, photo_5,
             lat_precise, lng_precise, lat_public, lng_public, privacy_radius,
-            lost_time, email, status, owner_token
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'尋找中',%s)
+            lost_time, email, status, owner_token, created_at
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'尋找中',%s,%s)
         RETURNING id
         """,
         (code, r["pet_name"], r["species"], r["size"], r["fur_length"], r["accessory"],
          r["accessory_color"], r["fur_color"], r["special_mark"], r["special_mark_note"],
          r["notes"], *photos, lat, lng, lat_pub, lng_pub, radius,
-         normalize_time(r["lost_time"]), r["email"], new_token(OWNER_TOKEN_PREFIX)),
+         normalize_time(r["lost_time"]), r["email"], new_token(OWNER_TOKEN_PREFIX),
+         created_utc(normalize_time(r["lost_time"]))),
     )
     geocoded.append(("lost_reports", cur.fetchone()["id"], lat_pub, lng_pub))
 
@@ -139,14 +146,15 @@ def main():
             species, size, fur_length, accessory, accessory_color, fur_color,
             special_mark, special_mark_note,
             photo_1, photo_2, photo_3, photo_4, photo_5,
-            lat, lng, description, sighting_time, status, score, tracking_token, contact_email
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'待確認',0,%s,%s)
+            lat, lng, description, sighting_time, status, score, tracking_token, contact_email, created_at
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'待確認',0,%s,%s,%s)
         RETURNING id
         """,
         (r["species"], r["size"], r["fur_length"], r["accessory"], r["accessory_color"],
          r["fur_color"], r["special_mark"], r["special_mark_note"], *photos, lat, lng,
          r["description"], normalize_time(r["sighting_time"]),
-         new_token(TRACK_TOKEN_PREFIX), r["contact_email"]),
+         new_token(TRACK_TOKEN_PREFIX), r["contact_email"],
+         created_utc(normalize_time(r["sighting_time"]))),
     )
     geocoded.append(("sightings", cur.fetchone()["id"], lat, lng))
 

@@ -262,6 +262,18 @@
     .done-actions .primary { background: #2563eb; color: #fff; }
     .done-actions .secondary { border: 1px solid #cbd5e1; color: #475569; }
     .done-actions .plain { color: #64748b; font-weight: normal; font-size: 14px; padding: 6px; }
+    #detailModal { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 9999; display: none; align-items: flex-end; justify-content: center; }
+    #detailModal.open { display: flex; }
+    #detailModal .sheet { background: #f9f8f3; width: 100%; max-width: 560px; max-height: 90vh; overflow-y: auto; border-radius: 20px 20px 0 0; padding: 18px; box-sizing: border-box; }
+    #detailModal .photos { display: flex; gap: 8px; overflow-x: auto; margin-bottom: 12px; }
+    #detailModal .photos img { height: 220px; border-radius: 12px; flex: none; }
+    #detailModal dl { display: grid; grid-template-columns: 90px 1fr; gap: 6px 10px; margin: 0 0 12px; font-size: 14px; }
+    #detailModal dt { color: #6b6b5e; }
+    #detailModal dd { margin: 0; word-break: break-word; }
+    #detailModal .sheet button, #detailModal .sheet a.full {
+      display: block; width: 100%; margin-top: 8px; padding: 11px; border-radius: 999px; text-align: center;
+      border: 1px solid #b8b3a6; background: #fff; font-size: 15px; cursor: pointer; color: inherit; text-decoration: none; box-sizing: border-box;
+    }
   </style>
   <link rel="stylesheet" href="/static/theme.css?v=4">
   <link rel="icon" type="image/png" href="/static/favicon.png?v=1">
@@ -1169,6 +1181,60 @@
       code.appendChild(mk('strong', '', result.case_code));
       screen.appendChild(code);
 
+      // 目擊詳細資料彈窗（不跳頁，附關閉按鈕）
+      async function openSightingDetail(n) {
+        let modal = document.getElementById('detailModal');
+        if (!modal) {
+          modal = document.createElement('div');
+          modal.id = 'detailModal';
+          modal.onclick = e => { if (e.target === modal) modal.classList.remove('open'); };
+          document.body.appendChild(modal);
+        }
+        const sheet = mk('div', 'sheet', '載入中…');
+        modal.replaceChildren(sheet);
+        modal.classList.add('open');
+        const close = mk('button', '', '關閉');
+        close.type = 'button';
+        close.onclick = () => modal.classList.remove('open');
+        let d = null;
+        try {
+          const res = await fetch(`/api/owner/${encodeURIComponent(result.owner_token)}/sightings/${Number(n.sighting_id)}`);
+          if (res.ok) d = (await res.json()).sighting;
+        } catch (e) {}
+        sheet.replaceChildren();
+        if (!d) {
+          sheet.appendChild(mk('div', '', '❌ 載入失敗，請稍後再試。'));
+          sheet.appendChild(close);
+          return;
+        }
+        const h = mk('h3', '', `目擊通報 #${Number(n.sighting_id)}`);
+        h.style.marginTop = '0';
+        sheet.appendChild(h);
+        const photos = mk('div', 'photos');
+        [d.photo_1, d.photo_2, d.photo_3, d.photo_4, d.photo_5].filter(Boolean).forEach(u => {
+          const img = document.createElement('img');
+          img.src = u; img.alt = '目擊照片';
+          photos.appendChild(img);
+        });
+        if (photos.children.length) sheet.appendChild(photos);
+        const dl = mk('dl');
+        [
+          ['物種', d.species], ['體型', d.size], ['毛色', d.fur_color], ['毛長', d.fur_length],
+          ['配件', [d.accessory, d.accessory_color].filter(Boolean).join(' ')],
+          ['特徵', [d.special_mark, d.special_mark_note].filter(Boolean).join('：')],
+          ['目擊時間', d.sighting_time],
+          ['距離', n.distance_km != null ? `約 ${n.distance_km} 公里` : ''],
+          ['發現環境', d.description],
+        ].forEach(([k, v]) => {
+          if (!v) return;
+          dl.append(mk('dt', '', k), mk('dd', '', v));
+        });
+        sheet.appendChild(dl);
+        const full = mk('a', 'full', '📊 完整比對／前往確認');
+        full.href = `/case/${encodeURIComponent(result.owner_token)}/sighting/${Number(n.sighting_id)}`;
+        sheet.append(full, close);
+      }
+
       // 2.5 發布當下就推薦資料庫裡已有的相符目擊（沿用案件通知的即時比對）
       const recBox = mk('div', 'sight-rec');
       recBox.style.display = 'none';
@@ -1182,7 +1248,8 @@
           recBox.appendChild(mk('div', 'hint', '這些是別人先前通報、外觀相近的目擊。點進去看詳細資料，確認是不是你的寶貝。'));
           list.forEach(n => {
             const a = mk('a', 'sight-item');
-            a.href = `/case/${encodeURIComponent(result.owner_token)}/sighting/${Number(n.sighting_id)}`;
+            a.href = '#';
+            a.onclick = e => { e.preventDefault(); openSightingDetail(n); };
             if (n.photo_1) {
               const img = document.createElement('img');
               img.src = n.photo_1; img.alt = '目擊照片';
