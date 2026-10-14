@@ -62,6 +62,14 @@
     /* 我的案件／我的通報：按鈕與下拉清單 */
     .my-cases-btn { background-color: #ef4444; }
     .my-sightings-btn { background-color: #1e40af; }
+    /* 通知數字：紅色圓點；按鈕上是總數，清單每一列是那一筆的新通知數 */
+    .loc-btn { position: relative; }
+    .badge {
+      display: inline-block; min-width: 18px; height: 18px; line-height: 18px;
+      padding: 0 5px; margin-left: 6px; border-radius: 9px; box-sizing: border-box;
+      background: #fff; color: #dc2626; font-size: 12px; font-weight: 700; text-align: center;
+    }
+    .my-row .badge { background: #dc2626; color: #fff; flex: none; }
     .top-btns { display: flex; gap: 6px; justify-content: center; }
     .my-cases-panel {
       display: none;
@@ -189,8 +197,8 @@
     <div class="top-btns">
       <button class="loc-btn" onclick="getUserLocation()">📍 目前位置</button>
       <!-- 這台裝置發過公告／通報過才會出現 -->
-      <button class="loc-btn my-cases-btn" id="myCasesBtn" onclick="togglePanel('myCasesPanel')" style="display: none;">📂 我的案件</button>
-      <button class="loc-btn my-sightings-btn" id="mySightingsBtn" onclick="togglePanel('mySightingsPanel')" style="display: none;">🔖 我的通報</button>
+      <button class="loc-btn my-cases-btn" id="myCasesBtn" onclick="togglePanel('myCasesPanel')" style="display: none;">📂 我的案件<span class="badge" id="myCasesBadge" hidden></span></button>
+      <button class="loc-btn my-sightings-btn" id="mySightingsBtn" onclick="togglePanel('mySightingsPanel')" style="display: none;">🔖 我的通報<span class="badge" id="mySightingsBadge" hidden></span></button>
     </div>
     <div class="my-cases-panel" id="myCasesPanel"></div>
     <div class="my-cases-panel" id="mySightingsPanel"></div>
@@ -362,7 +370,7 @@
     }
 
     // 每一列：左邊點下去進案件頁／追蹤頁，右邊「📍」在地圖上找那一點
-    function addRow(panel, href, title, sub, kind, id) {
+    function addRow(panel, href, title, sub, kind, id, badgeCount) {
       const row = document.createElement('div');
       row.className = 'my-row';
       const a = document.createElement('a');
@@ -380,6 +388,12 @@
       btn.textContent = '📍 地圖';
       btn.onclick = () => focusMarker(kind, id, false);
       row.appendChild(a);
+      if (badgeCount > 0) {
+        const badge = document.createElement('span');
+        badge.className = 'badge';
+        badge.textContent = badgeCount > 99 ? '99+' : badgeCount;
+        row.appendChild(badge);
+      }
       row.appendChild(btn);
       panel.appendChild(row);
     }
@@ -391,6 +405,57 @@
       panel.appendChild(t);
     }
 
+    // 通知數字：伺服器回傳「目前的通知」，扣掉這台裝置已經看過的就是新通知。
+    // 看過的紀錄由案件頁／追蹤頁寫入 localStorage（seenCases / seenSightings）。
+    // 通報的新通知＝飼主已確認或已排除、而且還沒看過這個結果（自己按「就是這隻」造成的狀態變化不算）。
+    let badgeData = { cases: {}, sightings: {} };
+
+    function loadSeen(key) {
+      try {
+        const v = JSON.parse(localStorage.getItem(key) || '{}');
+        return v && typeof v === 'object' ? v : {};
+      } catch (e) { return {}; }
+    }
+
+    function newCaseCount(token) {
+      const ids = badgeData.cases[token] || [];
+      const seenIds = loadSeen('seenCases')[token];
+      // 這台裝置從沒看過這個案件頁：目前所有通知都算新的
+      return Array.isArray(seenIds) ? ids.filter(id => !seenIds.includes(id)).length : ids.length;
+    }
+
+    function newSightingCount(x) {
+      const status = badgeData.sightings[x.token];
+      if (status !== '飼主已確認' && status !== '飼主已排除') return 0;
+      return loadSeen('seenSightings')[x.token] === status ? 0 : 1;
+    }
+
+    function setBadge(id, total) {
+      const el = document.getElementById(id);
+      el.hidden = total <= 0;
+      el.textContent = total > 99 ? '99+' : total;
+    }
+
+    async function refreshBadges() {
+      const cases = loadList('myCases').filter(c => c && c.token);
+      const sightings = loadList('mySightings').filter(x => x && x.token);
+      if (cases.length === 0 && sightings.length === 0) return;
+      try {
+        const res = await fetch('/api/my-badges', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            owner_tokens: cases.map(c => c.token),
+            tracking_tokens: sightings.map(x => x.token)
+          })
+        });
+        if (!res.ok) return;
+        badgeData = await res.json();
+      } catch (e) { return; }   // 查不到就不顯示數字，不影響地圖
+      renderMyCases();
+      renderMySightings();
+    }
+
     function renderMyCases() {
       // 舊版只存 id、沒有密鑰的紀錄已無法開啟（案件頁改用密鑰），直接略過
       const cases = loadList('myCases').filter(c => c && c.token);
@@ -399,8 +464,14 @@
       const panel = document.getElementById('myCasesPanel');
       panel.innerHTML = '';
       addTitle(panel, '我發布的走失公告（點名字看通報通知）');
-      cases.forEach(c => addRow(panel, `/case/${encodeURIComponent(c.token)}`,
-        `🐾 ${c.pet_name || '未命名'}`, c.case_code, 'lost', Number(c.id)));
+      let total = 0;
+      cases.forEach(c => {
+        const n = newCaseCount(c.token);
+        total += n;
+        addRow(panel, `/case/${encodeURIComponent(c.token)}`,
+          `🐾 ${c.pet_name || '未命名'}`, c.case_code, 'lost', Number(c.id), n);
+      });
+      setBadge('myCasesBadge', total);
     }
 
     function renderMySightings() {
@@ -410,11 +481,15 @@
       const panel = document.getElementById('mySightingsPanel');
       panel.innerHTML = '';
       addTitle(panel, '我通報的目擊（點一下看處理進度）');
+      let total = 0;
       list.forEach(x => {
         const emoji = x.species === '貓' ? '🐱' : '🐶';
+        const n = newSightingCount(x);
+        total += n;
         addRow(panel, `/track/${encodeURIComponent(x.token)}`,
-          `${emoji} ${x.fur_color || ''}${x.species || ''}`, (x.time || '').slice(5), 'sighting', Number(x.id));
+          `${emoji} ${x.fur_color || ''}${x.species || ''}`, (x.time || '').slice(5), 'sighting', Number(x.id), n);
       });
+      setBadge('mySightingsBadge', total);
     }
 
     function closePanels() {
@@ -430,6 +505,9 @@
 
     renderMyCases();
     renderMySightings();
+    refreshBadges();
+    // 從案件頁／追蹤頁按上一頁回來時（瀏覽器可能直接用快取頁面），重新算一次數字
+    window.addEventListener('pageshow', e => { if (e.persisted) refreshBadges(); });
 
     // 4. 使用者手機定位功能
     let userMarker = null;

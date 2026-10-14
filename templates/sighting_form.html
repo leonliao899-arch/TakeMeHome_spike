@@ -1115,11 +1115,15 @@
     // ==========================================
     // 反向推薦清單：「可能是這隻寵物嗎？」
     // ==========================================
+    // 本次已指認成功的公告名字（可以指認多筆，全部按完再按「完成」）
+    let pickedNames = [];
+
     function renderCandidates(candidates) {
       const area = document.getElementById('resultArea');
+      pickedNames = [];
       area.innerHTML = `
         <h3 style="margin-top:0">✅ 通報已存檔！可能是這隻寵物嗎？</h3>
-        <div class="hint">以下是外觀特徵相近、仍在尋找中的走失公告。看照片覺得是同一隻，就按「就是這隻！」</div>
+        <div class="hint">以下是外觀特徵相近、仍在尋找中的走失公告。看照片覺得是同一隻，就按「就是這隻！」。同一隻可能有好幾位飼主在找，每位都可以指認，全部按完再按最下方的「完成」。</div>
         <div id="candList"></div>
         <button type="button" class="btn-none" id="noneBtn">可能都不是</button>
       `;
@@ -1168,11 +1172,23 @@
           ul.appendChild(li);
         });
 
-        card.querySelector('.btn-pick').onclick = () => pickCandidate(c);
+        card.querySelector('.btn-pick').onclick = () => pickCandidate(c, card);
         list.appendChild(card);
       });
 
-      document.getElementById('noneBtn').onclick = () => renderDone('not-picked');
+      setDoneButton();
+    }
+
+    // 最下方按鈕：還沒指認任何一筆時是「可能都不是」，指認過後改成「完成」
+    function setDoneButton() {
+      const btn = document.getElementById('noneBtn');
+      if (pickedNames.length === 0) {
+        btn.textContent = '可能都不是';
+        btn.onclick = () => renderDone('not-picked');
+      } else {
+        btn.textContent = `完成（已指認 ${pickedNames.length} 筆）`;
+        btn.onclick = () => renderDone('picked', pickedNames.join('、'));
+      }
     }
 
     // 參考公告沒有進入推薦清單時，誠實說明原因（外觀分數未達門檻）
@@ -1184,9 +1200,10 @@
       return note;
     }
 
-    async function pickCandidate(c) {
-      // 鎖住所有按鈕，避免重複指認
-      document.querySelectorAll('#resultArea button').forEach(b => b.disabled = true);
+    async function pickCandidate(c, card) {
+      // 只鎖這張卡片的按鈕，避免同一張被重複指認；其他卡片仍可繼續指認
+      const btns = card.querySelectorAll('button');
+      btns.forEach(b => b.disabled = true);
       try {
         const res = await fetch(`/api/sightings/${sightingId}/match`, {
           method: 'POST',
@@ -1195,9 +1212,13 @@
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || '指認失敗');
-        renderDone('picked', c.pet_name);
+        // 成功：這張卡標成已指認，按鈕保持鎖定；其他卡不受影響
+        pickedNames.push(c.pet_name);
+        card.style.borderColor = '#16a34a';
+        card.querySelector('.btn-pick').textContent = '✓ 已指認';
+        setDoneButton();
       } catch (err) {
-        document.querySelectorAll('#resultArea button').forEach(b => b.disabled = false);
+        btns.forEach(b => b.disabled = false);
         alert('❌ ' + err.message + '，請再按一次。');
       }
     }

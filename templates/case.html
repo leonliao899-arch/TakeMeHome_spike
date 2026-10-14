@@ -153,9 +153,19 @@
       }
     }
 
+    // 記下「這台裝置已經看過這些通報」，首頁「我的案件」的通知數字才會歸零
+    function markSeen(data) {
+      try {
+        const seen = JSON.parse(localStorage.getItem('seenCases') || '{}');
+        seen[OWNER_TOKEN] = data.notifications.map(n => n.sighting_id);
+        localStorage.setItem('seenCases', JSON.stringify(seen));
+      } catch (e) { /* 無法存取就略過 */ }
+    }
+
     function render(lost, data) {
       const box = document.getElementById('content');
       box.innerHTML = '';
+      markSeen(data);
 
       // 1. 公告摘要
       const card = el('div', 'pet-card');

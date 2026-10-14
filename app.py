@@ -386,6 +386,25 @@ def init_db():
         )
     """)
 
+  # 3-0. 協尋者指認紀錄：一筆通報可以同時指認多則公告（matched_lost_id 只剩「最近一次指認」）
+  cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sighting_claims (
+            id SERIAL PRIMARY KEY,
+            sighting_id INTEGER NOT NULL,
+            lost_id INTEGER NOT NULL,
+            score INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (sighting_id, lost_id)
+        )
+    """)
+  # 舊資料：把原本單一的 matched_lost_id 搬進指認紀錄（已存在就跳過）
+  cursor.execute("""
+        INSERT INTO sighting_claims (sighting_id, lost_id, score)
+        SELECT id, matched_lost_id, COALESCE(score, 0) FROM sightings
+        WHERE matched_lost_id IS NOT NULL
+        ON CONFLICT (sighting_id, lost_id) DO NOTHING
+    """)
+
   # 3-1. 已處理過的 LINE 事件（用 webhookEventId 去重）：
   #      LINE 沒收到 200 會重送同一個事件，記下來就不會重複綁定、重複回覆
   cursor.execute("""
@@ -682,6 +701,18 @@ def line_send(event, texts):
   user_id = (event.get("source") or {}).get("userId")
   if user_id:
     line_api_post("/v2/bot/message/push", {"to": user_id, "messages": messages})
+
+
+def line_push_async(user_id, texts):
+  """背景推播給指定的 LINE 使用者（不拖慢網頁請求）；沒綁 LINE 的人直接略過"""
+  if not user_id:
+    return
+  messages = [{"type": "text", "text": t[:4900]} for t in texts][:5]
+  threading.Thread(
+      target=line_api_post,
+      args=("/v2/bot/message/push", {"to": user_id, "messages": messages}),
+      daemon=True,
+  ).start()
 
 
 def claim_line_event(event):
@@ -1176,7 +1207,8 @@ def match_sighting(sighting_id):
   1. 必須帶這筆通報自己的 tracking_token，後端比對相符才處理
      （通報不存在與追蹤碼不符回同一個錯誤，不透露通報是否存在）
   2. 外觀分數由伺服器用 calculate_match 重新計算，不採用前端傳來的任何分數
-  3. 將 sightings 表中的 matched_lost_id 綁定該公告，status 更新為 '已通知飼主'
+  3. 在 sighting_claims 新增一筆指認紀錄（同一筆通報可指認多則公告，重複指認同一則不會重複新增）；
+     sightings.matched_lost_id 記最近一次指認，status 更新為 '已通知飼主'
   """
   data = request.get_json(silent=True) or {}
   token = data.get("tracking_token")
@@ -1199,9 +1231,15 @@ def match_sighting(sighting_id):
     if not sighting or not token_matches(sighting["tracking_token"], token):
       return jsonify({"error": "找不到這筆通報，或追蹤碼不正確"}), 404
 
-    # 飼主已確認或已排除的通報不能再被改綁，避免覆蓋飼主的判斷
-    if sighting["status"] in ("飼主已確認", "飼主已排除"):
-      return jsonify({"error": "這筆通報飼主已處理過，無法再指認"}), 409
+    # 已被某位飼主確認（寵物已找到）的通報不能再指認
+    if sighting["status"] == "飼主已確認":
+      return jsonify({"error": "這筆通報飼主已確認過，無法再指認"}), 409
+    # 這則公告的飼主已經排除過這筆通報：不能再指認同一則（其他公告不受影響）
+    if conn.execute(
+        "SELECT 1 FROM sighting_rejections WHERE lost_id = %s AND sighting_id = %s",
+        (lost_id, sighting_id),
+    ).fetchone():
+      return jsonify({"error": "這則公告的飼主已排除這筆通報，無法再指認"}), 409
 
     lost = conn.execute(
         """
@@ -1222,7 +1260,32 @@ def match_sighting(sighting_id):
       return jsonify({"error": "物種不同，無法指認這則公告"}), 400
     score = int(match_res["appearance_score"])
 
-    # 更新目擊通報狀態與關聯外鍵
+    already_claimed = conn.execute(
+        "SELECT 1 FROM sighting_claims WHERE sighting_id = %s AND lost_id = %s",
+        (sighting_id, lost_id),
+    ).fetchone()
+
+    # 新增指認紀錄（同一則公告重複指認只更新分數）；通報可同時指認多則公告
+    conn.execute(
+        """
+        INSERT INTO sighting_claims (sighting_id, lost_id, score) VALUES (%s, %s, %s)
+        ON CONFLICT (sighting_id, lost_id) DO UPDATE SET score = EXCLUDED.score
+        """,
+        (sighting_id, lost_id, score),
+    )
+    # 第一次指認這則公告：推 LINE 給飼主（飼主有綁定才推）
+    if not already_claimed:
+      owner = conn.execute(
+          "SELECT owner_token, line_user_id FROM lost_reports WHERE id = %s", (lost_id,)
+      ).fetchone()
+      line_push_async(owner["line_user_id"], [
+          f"🔔 有協尋者指認了你的寶貝！\n「{lost['pet_name'] or '未命名'}」{lost['case_code']}\n"
+          f"外觀吻合 {score} 分\n"
+          f"查看通報：{public_base_url()}/case/{owner['owner_token']}\n"
+          "（這個連結就是你的鑰匙，請不要轉傳給別人）"
+      ])
+
+    # 更新目擊通報狀態；matched_lost_id 記最近一次指認（追蹤頁顯示用）
     conn.execute(
         """
         UPDATE sightings
@@ -1284,57 +1347,52 @@ def owner_get_case(token):
   return jsonify(dict(row)), 200
 
 
-@app.route("/api/owner/<token>/notifications", methods=["GET"])
-def owner_get_notifications(token):
-  """查詢這則公告的通知清單（即時計算版）：
+def compute_notifications(conn, lost_id):
+  """算出一則公告的通知清單（已排序）。
 
   1. 撈出這筆走失公告本身的特徵
-  2. 撈出還沒被認領的目擊通報，並排除「這則公告的飼主」已經排除過的
+  2. 撈出還沒被確認的目擊通報，並排除「這則公告的飼主」已經排除過的
   3. 逐筆套用 calculate_match，外觀分數 >= NOTIFY_THRESHOLD（40）就算有效通知
-  4. 已被協尋者手動指認（matched_lost_id = 本案）的通報，無論分數都強制納入
-  5. 依外觀等級與時空分數由高到低排序回傳
+  4. 已被協尋者手動指認（sighting_claims 有本案）的通報，無論分數都強制納入
+  5. 指認本案的置頂，其餘依外觀等級與時空分數由高到低排序
 
   隱私：回傳內容不含協尋者的 email 與追蹤碼。
   """
-  with get_db_connection() as conn:
-    lost_id = find_lost_id_by_owner_token(conn, token)
-    if lost_id is None:
-      return owner_not_found()
+  lost_row = conn.execute(
+      """
+      SELECT species, size, fur_length, accessory, accessory_color,
+             fur_color, special_mark, special_mark_note, lat_precise, lng_precise, lost_time
+      FROM lost_reports WHERE id = %s
+      """,
+      (lost_id,),
+  ).fetchone()
+  lost_obj = lost_to_match_obj(lost_row)
 
-    # 1. 取出比對所需欄位
-    lost_row = conn.execute(
-        """
-        SELECT species, size, fur_length, accessory, accessory_color,
-               fur_color, special_mark, special_mark_note, lat_precise, lng_precise, lost_time
-        FROM lost_reports WHERE id = %s
-        """,
-        (lost_id,),
-    ).fetchone()
-    lost_obj = lost_to_match_obj(lost_row)
-
-    # 2. 撈出候選通報：
-    #    - 已被飼主確認（寵物已找到）的通報不再推給任何人
-    #    - 本案飼主按過「不是我的寶貝」的通報，不再出現在本案的通知欄
-    sighting_rows = conn.execute(
-        """
-        SELECT id, species, size, fur_length, accessory, accessory_color,
-               fur_color, special_mark, special_mark_note, photo_1, lat, lng, description,
-               sighting_time, status, matched_lost_id
-        FROM sightings
-        WHERE status != '飼主已確認'
-          AND id NOT IN (
-              SELECT sighting_id FROM sighting_rejections WHERE lost_id = %s
-          )
-        """,
-        (lost_id,),
-    ).fetchall()
+  # 已被飼主確認（寵物已找到）的通報不再推給任何人；本案飼主按過「不是我的寶貝」的也不再出現
+  sighting_rows = conn.execute(
+      """
+      SELECT id, species, size, fur_length, accessory, accessory_color,
+             fur_color, special_mark, special_mark_note, photo_1, lat, lng, description,
+             sighting_time, status, matched_lost_id,
+             EXISTS (
+                 SELECT 1 FROM sighting_claims c
+                 WHERE c.sighting_id = sightings.id AND c.lost_id = %s
+             ) AS claimed_by_this
+      FROM sightings
+      WHERE status != '飼主已確認'
+        AND id NOT IN (
+            SELECT sighting_id FROM sighting_rejections WHERE lost_id = %s
+        )
+      """,
+      (lost_id, lost_id),
+  ).fetchall()
 
   notifications = []
   for row in sighting_rows:
     match_res = calculate_match(lost_obj, sighting_to_match_obj(row))
 
-    # 3. 門檻判斷：外觀分數 >= 40 就通知；但已被協尋者手動指認本案的，強制納入
-    already_picked = row["matched_lost_id"] == lost_id
+    # 門檻判斷：外觀分數 >= 40 就通知；但已被協尋者手動指認本案的，強制納入
+    already_picked = row["claimed_by_this"]
     if already_picked or (
         not match_res["is_excluded"] and match_res["appearance_score"] >= NOTIFY_THRESHOLD
     ):
@@ -1351,11 +1409,24 @@ def owner_get_notifications(token):
           "manually_confirmed": already_picked,
       })
 
-  # 4. 排序：先看外觀等級（60 分以上優先），同一級內再依時空分數由高到低
   notifications.sort(
-      key=lambda x: rank_key(x["appearance_score"], x["spatiotemporal_score"]),
+      key=lambda x: (
+          x["manually_confirmed"],
+          rank_key(x["appearance_score"], x["spatiotemporal_score"]),
+      ),
       reverse=True,
   )
+  return notifications
+
+
+@app.route("/api/owner/<token>/notifications", methods=["GET"])
+def owner_get_notifications(token):
+  """查詢這則公告的通知清單（即時計算版），邏輯見 compute_notifications"""
+  with get_db_connection() as conn:
+    lost_id = find_lost_id_by_owner_token(conn, token)
+    if lost_id is None:
+      return owner_not_found()
+    notifications = compute_notifications(conn, lost_id)
 
   return (
       jsonify({
@@ -1364,6 +1435,47 @@ def owner_get_notifications(token):
       }),
       200,
   )
+
+
+MY_BADGES_LIMIT = 20  # 一次最多查幾組 token，避免被拿來大量掃描
+
+
+@app.route("/api/my-badges", methods=["POST"])
+def my_badges():
+  """首頁「我的案件／我的通報」的通知數字用。
+
+  前端把這台裝置存的 token 用 POST 送來（不放在網址，避免出現在日誌裡），回傳：
+    cases:     {owner_token: [目前通知清單裡的通報 id]}，前端跟「看過的 id」相減就是新通知數
+    sightings: {tracking_token: 通報目前的狀態}，前端比對有沒有新的處理結果
+  格式不對或查不到的 token 直接略過，不透露原因。
+  """
+  data = request.get_json(silent=True) or {}
+  owner_tokens = [t for t in (data.get("owner_tokens") or [])
+                  if isinstance(t, str) and OWNER_TOKEN_RE.match(t)][:MY_BADGES_LIMIT]
+  track_tokens = [t for t in (data.get("tracking_tokens") or [])
+                  if isinstance(t, str) and TRACK_TOKEN_RE.match(t)][:MY_BADGES_LIMIT]
+
+  cases, sightings = {}, {}
+  with get_db_connection() as conn:
+    for token in owner_tokens:
+      lost_id = find_lost_id_by_owner_token(conn, token)
+      if lost_id is None:
+        continue
+      status = conn.execute(
+          "SELECT status FROM lost_reports WHERE id = %s", (lost_id,)
+      ).fetchone()["status"]
+      # 已結案的公告不再有新通知
+      cases[token] = (
+          [n["sighting_id"] for n in compute_notifications(conn, lost_id)]
+          if status == "尋找中" else []
+      )
+    for token in track_tokens:
+      row = conn.execute(
+          "SELECT status FROM sightings WHERE tracking_token = %s", (token,)
+      ).fetchone()
+      if row:
+        sightings[token] = row["status"]
+  return jsonify({"cases": cases, "sightings": sightings}), 200
 
 
 @app.route("/api/owner/<token>/sightings/<int:sighting_id>", methods=["GET"])
@@ -1388,6 +1500,10 @@ def owner_get_sighting(token, sighting_id):
         "SELECT 1 FROM sighting_rejections WHERE lost_id = %s AND sighting_id = %s",
         (lost_id, sighting_id),
     ).fetchone()
+    claimed = conn.execute(
+        "SELECT 1 FROM sighting_claims WHERE lost_id = %s AND sighting_id = %s",
+        (lost_id, sighting_id),
+    ).fetchone()
 
   if not sighting:
     return jsonify({"error": f"找不到通報 ID {sighting_id}"}), 404
@@ -1409,7 +1525,7 @@ def owner_get_sighting(token, sighting_id):
           "spatiotemporal_score": match_res["spatiotemporal_score"],
       },
       "compare": build_compare(lost, sighting),
-      "manually_confirmed": sighting["matched_lost_id"] == lost_id,
+      "manually_confirmed": bool(claimed),
       "rejected_by_owner": bool(rejected),
   }), 200
 
@@ -1440,6 +1556,22 @@ def owner_confirm_found(token):
     ).fetchone():
       return jsonify({"error": f"找不到通報 ID {sighting_id}"}), 404
 
+    # 先記下要通知的目擊者（更新狀態前查，之後才能推播）
+    if sighting_id:
+      targets = conn.execute(
+          "SELECT id, line_user_id, tracking_token FROM sightings WHERE id = %s", (sighting_id,)
+      ).fetchall()
+    else:
+      targets = conn.execute(
+          "SELECT id, line_user_id, tracking_token FROM sightings WHERE id IN"
+          " (SELECT sighting_id FROM sighting_claims WHERE lost_id = %s)",
+          (lost_id,),
+      ).fetchall()
+    lost_info = conn.execute(
+        "SELECT pet_name, case_code FROM lost_reports WHERE id = %s", (lost_id,)
+    ).fetchone()
+    base = public_base_url()
+
     # 1. 將走失公告改為「已尋回」
     conn.execute("UPDATE lost_reports SET status = '已尋回' WHERE id = %s", (lost_id,))
 
@@ -1452,9 +1584,17 @@ def owner_confirm_found(token):
     else:
       # 若未指定特定通報，將所有關聯該公告的通報皆更新
       conn.execute(
-          "UPDATE sightings SET status = '飼主已確認' WHERE matched_lost_id = %s",
+          "UPDATE sightings SET status = '飼主已確認' WHERE id IN"
+          " (SELECT sighting_id FROM sighting_claims WHERE lost_id = %s)",
           (lost_id,),
       )
+
+  for t in targets:
+    line_push_async(t["line_user_id"], [
+        f"🎉 你通報的寵物找到主人了！\n「{lost_info['pet_name'] or '未命名'}」{lost_info['case_code']}"
+        " 已由飼主確認尋回，感謝你的協助 🐾\n"
+        f"查看處理進度：{base}/track/{t['tracking_token']}"
+    ])
 
   return (
       jsonify({
