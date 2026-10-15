@@ -911,9 +911,14 @@
           userMarker = L.marker([lat, lng]).addTo(map).bindPopup("<b>📍 你目前的位置</b>").openPopup();
         },
         (err) => {
-          showStatus("❌ 無法取得定位授權", true);
+          const msgs = {
+            1: "❌ 定位權限被拒絕（請到 設定 > 隱私權與安全性 > 定位服務，開啟系統與瀏覽器的定位）",
+            2: "❌ 抓不到位置（請確認已開啟定位服務，並稍後再試）",
+            3: "❌ 定位逾時，請到訊號較好的地方再試一次",
+          };
+          showStatus(msgs[err.code] || "❌ 無法取得定位", true);
         },
-        { enableHighAccuracy: true, timeout: 10000 }
+        { enableHighAccuracy: false, timeout: 15000, maximumAge: 60000 }
       );
     }
   </script>

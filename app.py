@@ -898,7 +898,7 @@ def bind_token(conn, token, line_user_id, base):
           (line_user_id, token),
       ).fetchone()
       if reserved:
-        return "已綁定 LINE ✓\n回到網站按「確認發布」送出公告後，有新通報就會通知你。"
+        return "✅ 已綁定 LINE ✅\n回到網站按「確認發布」送出公告後，有新通報就會通知你。"
       return "找不到這組追蹤碼，請確認完整複製"
     return (
         f"已綁定「{row['pet_name'] or '未命名'}」{row['case_code']} ✓\n"
@@ -912,7 +912,7 @@ def bind_token(conn, token, line_user_id, base):
   ).fetchone()
   if not row:
     return "找不到這組追蹤碼，請確認完整複製"
-  return f"已綁定你的目擊通報 ✓\n處理進度：{base}/track/{token}"
+  return f"✅ 已綁定你的目擊通報 ✅\n處理進度：{base}/track/{token}"
 
 
 HELP_TEXT = (
@@ -2109,7 +2109,7 @@ def owner_confirm_found(token):
 
   for t in targets:
     line_push_async(t["line_user_id"], [
-        f"🎉 你通報的寵物找到主人了！\n「{lost_info['pet_name'] or '未命名'}」{lost_info['case_code']}"
+        f"🎉 你通報的寵物找到主人了 🎉\n「{lost_info['pet_name'] or '未命名'}」{lost_info['case_code']}"
         " 已由飼主確認尋回，感謝你的協助 🐾\n"
         f"查看處理進度：{base}/track/{t['tracking_token']}"
     ])
