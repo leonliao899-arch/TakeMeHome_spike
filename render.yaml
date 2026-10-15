@@ -23,6 +23,8 @@ services:
         sync: false
       - key: AZURE_OPENAI_API_VERSION
         sync: false
+      - key: AI_COMPARE            # 填 1 才啟用 AI 照片比對（參考意見）；沒填就完全不顯示
+        sync: false
       - key: LINE_CHANNEL_SECRET
         sync: false
       - key: LINE_CHANNEL_ACCESS_TOKEN
