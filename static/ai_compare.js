@@ -20,7 +20,7 @@ window.TMH_AI = (function () {
     if (info && info.similarity) {
       const row = mk('div', 'ai-row');
       const line = mk('div', 'ai-line');
-      line.appendChild(mk('span', '', '🤖 識別結果：'));
+      line.appendChild(mk('span', '', '🤖 辨識結果：'));
       line.appendChild(mk('span', 'ai-sim ' + simClass(info.similarity), info.similarity));
       if (info.reason) line.appendChild(mk('span', '', '・' + info.reason));
       row.appendChild(line);
