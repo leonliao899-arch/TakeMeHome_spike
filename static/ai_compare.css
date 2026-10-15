@@ -1,0 +1,25 @@
+/* AI 照片比對（參考意見）：卡片上的 AI 區塊與黃框，A／B／C 共用 */
+.ai-row { font-size: 13px; margin-top: 4px; min-width: 0; }
+.ai-row .ai-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ai-row .ai-note { font-size: 11px; color: #94a3b8; }
+.ai-row.ai-wait { color: #64748b; }
+.ai-row .ai-sim { font-weight: bold; }
+.ai-row .ai-sim.s-high { color: #15803d; }
+.ai-row .ai-sim.s-mid { color: #a16207; }
+.ai-row .ai-sim.s-low { color: #64748b; }
+/* 卡片上的 AI 參考那一行整行用紅色 */
+.ai-row .ai-line, .ai-row .ai-sim { color: #dc2626; }
+/* flex 子元素預設不會縮小，長文字會把卡片撐破；讓 … 截斷生效 */
+.cand-head > div:last-child { min-width: 0; }
+/* 高／中：整張卡片黃色外框（只是視覺標示） */
+.ai-hit { border: 2px solid #facc15 !important; }
+/* 協尋者指認（琥珀色底＋邊框＋⭐）同時有 AI 黃框：保留指認的邊框與底色，黃框改成外圈 */
+.notice.picked.ai-hit { border: 2px solid #f59e0b !important; box-shadow: 0 0 0 3px #facc15; }
+/* 詳情頁完整區塊 */
+.ai-box { border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 12px; margin: 12px 0; background: #fff; font-size: 14px; }
+.ai-box.ai-hit { border: 2px solid #facc15; }
+.ai-box .ai-sim { font-weight: bold; }
+.ai-box .ai-sim.s-high { color: #15803d; }
+.ai-box .ai-sim.s-mid { color: #a16207; }
+.ai-box .ai-sim.s-low { color: #64748b; }
+.ai-box .ai-note { font-size: 11px; color: #94a3b8; margin-top: 4px; }

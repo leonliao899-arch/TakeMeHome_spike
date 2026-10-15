@@ -112,6 +112,7 @@
     .error { color: #dc2626; text-align: center; padding: 30px 0; font-weight: bold; }
   </style>
   <link rel="stylesheet" href="/static/theme.css?v=4">
+  <link rel="stylesheet" href="/static/ai_compare.css?v=2">
   <link rel="icon" type="image/png" href="/static/favicon.png?v=1">
   <link rel="apple-touch-icon" href="/static/favicon.png?v=1">
 </head>
@@ -131,6 +132,7 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/static/ai_compare.js?v=1"></script>
   <script>
     // 案件密鑰由 Flask 帶入；前端不再傳 lost_id，伺服器用密鑰找出是哪一件案子
     const OWNER_TOKEN = {{ owner_token|tojson }};
@@ -236,6 +238,10 @@
       cols.appendChild(photoColumn('目擊照片', [sighting.photo_1, sighting.photo_2, sighting.photo_3, sighting.photo_4, sighting.photo_5]));
       cols.appendChild(photoColumn(`你的${lost.pet_name || '寶貝'}`, [lost.photo_1, lost.photo_2, lost.photo_3, lost.photo_4, lost.photo_5]));
       box.appendChild(cols);
+
+      // 2.5 AI 參考意見（照片區下方、特徵比對表上方；沒結果也不在比對中就不顯示）
+      const aiBox = window.TMH_AI ? TMH_AI.box(d.ai_compare, !!d.ai_pending) : null;
+      if (aiBox) box.appendChild(aiBox);
 
       // 3. 特徵並排
       box.appendChild(el('h3', '', '🔍 特徵比對'));

@@ -42,6 +42,9 @@ from matcher import NOTIFY_THRESHOLD, calculate_match, compare_special_marks, ra
 # AI 照片辨識（Azure AI Foundry）：提供 /api/analyze-photo 預填外觀欄位
 from vision import vision_bp
 
+# AI 照片比對（參考意見）：只做顯示，AI_COMPARE=1 才啟用，見 ai_compare.py
+import ai_compare
+
 app = Flask(__name__)
 app.register_blueprint(vision_bp)
 
@@ -455,6 +458,35 @@ def init_db():
   cursor.execute("UPDATE sightings SET status = '待確認', excluded_at = NULL WHERE status = '飼主已排除'")
   cursor.execute("DELETE FROM sighting_rejections")
 
+  # 4-1. AI 照片比對（參考意見）：結果表（同一組配對只算一次）與 job 表（判斷「比對中」）
+  cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ai_comparisons (
+            id SERIAL PRIMARY KEY,
+            lost_id INTEGER NOT NULL,
+            sighting_id INTEGER NOT NULL,
+            similarity TEXT NOT NULL,
+            reason TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+  cursor.execute(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_comparisons_pair ON ai_comparisons (lost_id, sighting_id)"
+  )
+  cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ai_compare_jobs (
+            id SERIAL PRIMARY KEY,
+            trigger_type TEXT NOT NULL,
+            trigger_id INTEGER NOT NULL,
+            started_at TIMESTAMP DEFAULT NOW(),
+            finished_at TIMESTAMP,
+            ok BOOLEAN
+        )
+    """)
+  cursor.execute(
+      "CREATE INDEX IF NOT EXISTS idx_ai_compare_jobs_trigger ON ai_compare_jobs (trigger_type, trigger_id)"
+  )
+  conn.commit()
+
   # 5. 補發 token：舊資料（沒有 owner_token 的公告、沒有追蹤碼的通報）也要有，
   #    確保「每一筆資料都有 token」。補發的 token 只存在資料庫，沒有人知道，
   #    舊公告的飼主頁因此無法再從網址打開（這正是預期的結果）。
@@ -526,7 +558,8 @@ def file_too_large(_err):
 
 
 # 網址裡帶有 token 的頁面與 API
-PRIVATE_PATH_PREFIXES = ("/case/", "/api/owner/", "/track/", "/api/bind-status/", "/api/track/")
+PRIVATE_PATH_PREFIXES = ("/case/", "/api/owner/", "/track/", "/api/bind-status/", "/api/track/",
+                         "/api/sightings/trk_")
 
 
 @app.after_request
@@ -1348,8 +1381,19 @@ def create_lost_report():
     ).fetchone()
     if row:
       save_township_async("lost_reports", row["id"], row["lat_public"], row["lng_public"])
-      return lost_created_response(row, 201)
+      response = lost_created_response(row, 201)
+  if row:
+    # AI 照片比對（背景執行；候選在背景挑選：通過門檻的前 5 筆目擊）
+    new_lost_id = row["id"]
 
+    def pick_for_lost(conn, lid=new_lost_id, photo=data.get("photo_1")):
+      top = ai_pick_lost_notifications(compute_notifications(conn, lid))
+      return photo, [(n["sighting_id"], n["photo_1"]) for n in top]
+
+    ai_start("lost", new_lost_id, pick_for_lost)
+    return response
+
+  with get_db_connection() as conn:
     existing = conn.execute(
         "SELECT id, case_code, owner_token, lat_public, lng_public"
         " FROM lost_reports WHERE client_submit_id = %s",
@@ -1358,6 +1402,69 @@ def create_lost_report():
   if not existing:  # 理論上不會發生；保險起見回可重試的錯誤
     return jsonify({"error": "發布時發生問題，請再按一次送出"}), 500
   return lost_created_response(existing, 200, duplicate=True)
+
+
+# ==========================================
+# AI 照片比對（參考意見）：結果只做顯示，不參與分數、排序、通知
+# ==========================================
+def ai_start(trigger_type, trigger_id, pick):
+  """啟動背景比對。未啟用或任何錯誤都靜默略過，絕不影響呼叫端的回應。
+
+  job 先同步寫入（讓畫面馬上知道「比對中」），候選挑選與 Azure 呼叫都在背景執行緒。
+  """
+  if not ai_compare.enabled():
+    return
+  try:
+    with get_db_connection() as conn:
+      job_id = ai_compare.create_job(conn, trigger_type, trigger_id)
+    threading.Thread(
+        target=ai_compare.run_job,
+        args=(get_db_connection, job_id, trigger_type, trigger_id, pick),
+        daemon=True,
+    ).start()
+  except Exception as e:
+    print(f"[ai_compare] 啟動失敗：{type(e).__name__}")
+
+
+def ai_pick_lost_notifications(notifications):
+  """飼主端的 AI 候選：通過外觀門檻、依 rank_key 排序的前 5 筆通報（只讀，不改原清單）。"""
+  qualified = [n for n in notifications if n["appearance_score"] >= NOTIFY_THRESHOLD]
+  qualified.sort(
+      key=lambda x: rank_key(x["appearance_score"], x["spatiotemporal_score"]), reverse=True
+  )
+  return qualified[:ai_compare.MAX_CANDIDATES]
+
+
+def ai_attach_to_notifications(conn, lost_id, notifications):
+  """替通知清單的每一筆加上選填欄位 ai_compare / ai_pending（原本的欄位與順序不動）。"""
+  for n in notifications:
+    n["ai_compare"] = None
+    n["ai_pending"] = False
+  if not ai_compare.enabled() or not notifications:
+    return
+  try:
+    ids = [n["sighting_id"] for n in notifications]
+    rows = conn.execute(
+        "SELECT sighting_id, similarity, reason FROM ai_comparisons"
+        " WHERE lost_id = %s AND sighting_id = ANY(%s)",
+        (lost_id, ids),
+    ).fetchall()
+    found = {r["sighting_id"]: {"similarity": r["similarity"], "reason": r["reason"]} for r in rows}
+    lost_pending = bool(ai_compare.pending_trigger_ids(conn, "lost", [lost_id]))
+    top_ids = {n["sighting_id"] for n in ai_pick_lost_notifications(notifications)}
+    sight_pending = ai_compare.pending_trigger_ids(conn, "sighting", ids)
+    for n in notifications:
+      sid = n["sighting_id"]
+      n["ai_compare"] = found.get(sid)
+      if sid not in found and (
+          (lost_pending and sid in top_ids) or sid in sight_pending
+      ):
+        n["ai_pending"] = True
+  except Exception as e:
+    print(f"[ai_compare] 讀取結果失敗：{type(e).__name__}")
+    for n in notifications:
+      n["ai_compare"] = None
+      n["ai_pending"] = False
 
 
 def build_candidates(lost_rows, current):
@@ -1517,6 +1624,12 @@ def create_sighting():
 
   candidates = build_candidates(lost_candidates, current_sighting)
 
+  # AI 照片比對（背景執行；候選順序與內容不受影響）
+  ai_cands = [(c["lost_id"], c["photo_1"]) for c in candidates[:ai_compare.MAX_CANDIDATES]]
+  if ai_cands:
+    ai_start("sighting", new_sighting_id,
+             lambda conn, p=data.get("photo_1"), c=ai_cands: (p, c))
+
   return (
       jsonify({
           "message": "目擊通報已存檔！",
@@ -1580,6 +1693,37 @@ def track_candidates(token):
   candidates = build_candidates(lost_rows, sighting_to_match_obj(sighting))
   return jsonify({"sighting_id": sighting["id"], "closed": False,
                   "claimed": claimed, "candidates": candidates}), 200
+
+
+@app.route("/api/sightings/<token>/ai-compare", methods=["GET"])
+def sighting_ai_compare(token):
+  """協尋者推薦頁輪詢：這筆通報的 AI 比對結果。只回自己那筆通報的結果。
+
+  token 格式錯誤與不存在回同一則 404。回傳 {pending, results: {lost_id: {similarity, reason}}}。
+  """
+  not_found = (jsonify({"error": "找不到這筆通報"}), 404)
+  if not TRACK_TOKEN_RE.match(token):
+    return not_found
+  with get_db_connection() as conn:
+    sighting = conn.execute(
+        "SELECT id FROM sightings WHERE tracking_token = %s", (token,)
+    ).fetchone()
+    if not sighting:
+      return not_found
+    results, pending = {}, False
+    if ai_compare.enabled():
+      try:
+        rows = conn.execute(
+            "SELECT lost_id, similarity, reason FROM ai_comparisons WHERE sighting_id = %s",
+            (sighting["id"],),
+        ).fetchall()
+        results = {str(r["lost_id"]): {"similarity": r["similarity"], "reason": r["reason"]}
+                   for r in rows}
+        pending = bool(ai_compare.pending_trigger_ids(conn, "sighting", [sighting["id"]]))
+      except Exception as e:
+        print(f"[ai_compare] 讀取結果失敗：{type(e).__name__}")
+        results, pending = {}, False
+  return jsonify({"pending": pending, "results": results}), 200
 
 
 @app.route("/api/sightings/<int:sighting_id>/match", methods=["POST"])
@@ -1800,6 +1944,7 @@ def owner_get_notifications(token):
     if lost_id is None:
       return owner_not_found()
     notifications = compute_notifications(conn, lost_id)
+    ai_attach_to_notifications(conn, lost_id, notifications)
 
   return (
       jsonify({
@@ -1873,6 +2018,9 @@ def owner_get_sighting(token, sighting_id):
         "SELECT 1 FROM sighting_claims WHERE lost_id = %s AND sighting_id = %s",
         (lost_id, sighting_id),
     ).fetchone()
+    ai_item = {"sighting_id": sighting_id, "appearance_score": NOTIFY_THRESHOLD, "spatiotemporal_score": 0}
+    if sighting:
+      ai_attach_to_notifications(conn, lost_id, [ai_item])
 
   if not sighting:
     return jsonify({"error": f"找不到通報 ID {sighting_id}"}), 404
@@ -1895,6 +2043,8 @@ def owner_get_sighting(token, sighting_id):
       },
       "compare": build_compare(lost, sighting),
       "manually_confirmed": bool(claimed),
+      "ai_compare": ai_item["ai_compare"],
+      "ai_pending": ai_item["ai_pending"],
   }), 200
 
 

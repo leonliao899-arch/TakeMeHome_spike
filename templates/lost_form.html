@@ -276,6 +276,7 @@
     }
   </style>
   <link rel="stylesheet" href="/static/theme.css?v=4">
+  <link rel="stylesheet" href="/static/ai_compare.css?v=2">
   <link rel="icon" type="image/png" href="/static/favicon.png?v=1">
   <link rel="apple-touch-icon" href="/static/favicon.png?v=1">
 </head>
@@ -518,6 +519,7 @@
   <!-- LINE 綁定區塊（成功頁用）：沒設定 Basic ID 時不會顯示 -->
   <script>window.LINE_BOT_BASIC_ID = {{ line_bot_basic_id|tojson }};</script>
   <script src="{{ url_for('static', filename='line_bind.js') }}"></script>
+  <script src="/static/ai_compare.js?v=1"></script>
   <script>
     // 把使用者輸入的文字轉成純文字再放進 innerHTML，避免輸入的 HTML 被執行
     function esc(value) {
@@ -1239,7 +1241,9 @@
       const recBox = mk('div', 'sight-rec');
       recBox.style.display = 'none';
       screen.appendChild(recBox);
-      fetch(`/api/owner/${encodeURIComponent(result.owner_token)}/notifications`)
+      const aiCards = {};   // sighting_id -> {card, host}：AI 參考意見（輪詢更新，不改清單內容與順序）
+      const notiUrl = `/api/owner/${encodeURIComponent(result.owner_token)}/notifications`;
+      fetch(notiUrl)
         .then(r => r.ok ? r.json() : null)
         .then(d => {
           const list = (d && d.notifications) || [];
@@ -1259,11 +1263,33 @@
             info.appendChild(mk('div', '', n.match_level || ''));
             info.appendChild(mk('div', '', `🕒 ${n.sighting_time || ''}`));
             if (n.distance_km != null) info.appendChild(mk('div', '', `📏 約 ${n.distance_km} 公里`));
+            const aiHost = mk('div');
+            info.appendChild(aiHost);
             a.appendChild(info);
             a.appendChild(mk('span', 'go', '查看 ›'));
             recBox.appendChild(a);
+            aiCards[n.sighting_id] = { card: a, host: aiHost };
+            if (window.TMH_AI) TMH_AI.apply(a, aiHost, n.ai_compare, !!n.ai_pending);
           });
           recBox.style.display = 'block';
+          // 發布當下 AI 還在背景跑：每 2 秒更新各卡片，最多約 25 秒
+          if (window.TMH_AI && list.some(n => n.ai_pending)) {
+            const refresh = async () => {
+              const r = await fetch(notiUrl);
+              if (!r.ok) return false;
+              let more = false;
+              ((await r.json()).notifications || []).forEach(n => {
+                const x = aiCards[n.sighting_id];
+                if (!x) return;
+                TMH_AI.apply(x.card, x.host, n.ai_compare, !!n.ai_pending);
+                if (n.ai_pending) more = true;
+              });
+              return more;
+            };
+            TMH_AI.poll(refresh, () => Object.values(aiCards).forEach(x => {
+              if (x.host.querySelector('.ai-wait')) TMH_AI.apply(x.card, x.host, null, false);
+            }));
+          }
         })
         .catch(() => {});
 

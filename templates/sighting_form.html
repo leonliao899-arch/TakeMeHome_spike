@@ -235,6 +235,7 @@
     .link-secondary { border: 1px solid #cbd5e1; color: #475569; }
   </style>
   <link rel="stylesheet" href="/static/theme.css?v=4">
+  <link rel="stylesheet" href="/static/ai_compare.css?v=2">
   <link rel="icon" type="image/png" href="/static/favicon.png?v=1">
   <link rel="apple-touch-icon" href="/static/favicon.png?v=1">
 </head>
@@ -443,6 +444,7 @@
   <!-- LINE 綁定區塊（完成畫面用）：沒設定 Basic ID 時不會顯示 -->
   <script>window.LINE_BOT_BASIC_ID = {{ line_bot_basic_id|tojson }};</script>
   <script src="{{ url_for('static', filename='line_bind.js') }}"></script>
+  <script src="/static/ai_compare.js?v=1"></script>
   <script>
     // ==========================================
     // 共用設定
@@ -1185,6 +1187,9 @@
         card.querySelector('.cand-code').textContent = '案件編號 ' + c.case_code;
         card.querySelector('.level').textContent = c.match_level;
         card.querySelector('.dist').textContent = `📏 距離走失地點約 ${c.distance_km} 公里`;
+        const aiHost = document.createElement('div');   // AI 參考意見放這裡（卡片順序與按鈕不受影響）
+        card.querySelector('.dist').after(aiHost);
+        aiCards[c.lost_id] = { card, host: aiHost };
 
         const ul = card.querySelector('ul');
         Object.entries(c.details || {}).forEach(([name, val]) => {
@@ -1201,6 +1206,30 @@
       });
 
       setDoneButton();
+      startAiCompare();
+    }
+
+    // ==========================================
+    // 🤖 AI 照片比對（參考意見）：卡片先照常顯示，結果由背景比對寫入後輪詢取得
+    // 沒啟用、失敗或逾時：什麼都不顯示
+    // ==========================================
+    let aiCards = {};
+    async function fetchAiOnce() {
+      const res = await fetch(`/api/sightings/${encodeURIComponent(trackingToken)}/ai-compare`);
+      if (!res.ok) return false;
+      const d = await res.json();
+      Object.keys(aiCards).forEach(id => {
+        const info = (d.results || {})[id] || null;
+        TMH_AI.apply(aiCards[id].card, aiCards[id].host, info, !!d.pending && !info);
+      });
+      return !!d.pending;
+    }
+    function startAiCompare() {
+      if (!window.TMH_AI) return;
+      const clearWait = () => Object.values(aiCards).forEach(x => {
+        if (x.host.querySelector('.ai-wait')) TMH_AI.apply(x.card, x.host, null, false);
+      });
+      fetchAiOnce().then(more => { if (more) TMH_AI.poll(fetchAiOnce, clearWait); }).catch(() => {});
     }
 
     // 候選公告詳細資料（彈窗，內含指認按鈕）
